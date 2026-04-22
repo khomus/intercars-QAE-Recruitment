@@ -519,10 +519,56 @@ export async function clickFirstUsableListFilter(page: Page): Promise<void> {
   }
 }
 
+/**
+ * Klik w „Do koszyka" dla n-tej *unikalnej* oferty (`/produkty/…` po pathname).
+ * Po 1. dodaniu n-ta sekwencyjna przycisku na liście ≠ n-ty produkt (przyciski się przesuwają / stan).
+ */
 export async function addToCartByIndex(page: Page, productIndex: number): Promise<void> {
+  const clicked = await page.evaluate((wantIdx: number) => {
+    const main =
+      (document.querySelector('#gc-main-content') as HTMLElement | null) ||
+      (document.querySelector('main') as HTMLElement | null) ||
+      (document.querySelector('[role="main"]') as HTMLElement | null) ||
+      (document.querySelector('body') as HTMLElement | null) ||
+      document.body;
+    const as = main.querySelectorAll<HTMLAnchorElement>('a[href*="/produkty/"]');
+    const seen = new Set<string>();
+    let n = 0;
+    let target: HTMLAnchorElement | null = null;
+    for (const a of as) {
+      let path = '';
+      try {
+        path = new URL(a.getAttribute('href') || a.href, document.baseURI).pathname;
+      } catch {
+        continue;
+      }
+      if (!/produkt/.test(path)) continue;
+      if (seen.has(path)) continue;
+      seen.add(path);
+      if (n === wantIdx) {
+        target = a;
+        break;
+      }
+      n += 1;
+    }
+    if (!target) return false;
+    for (let el: Element | null = target; el && el !== main; el = el.parentElement) {
+      for (const b of (el as HTMLElement).querySelectorAll<HTMLButtonElement>('button')) {
+        const t = b.textContent || b.innerText || '';
+        if (/do\s*koszyka|do\s*kosz/i.test(t) && !/dodan|w\s*kosz/i.test(t)) {
+          b.scrollIntoView({ block: 'center' });
+          b.click();
+          return true;
+        }
+      }
+    }
+    return false;
+  }, productIndex);
+  if (clicked) {
+    return;
+  }
   const main = page.locator('#gc-main-content, [id="gc-main-content"], main, [id="main"], [role="main"]').first();
   const scope = (await main.count().catch(() => 0)) > 0 ? main : page;
-  // Lista B2C: płytki w `div`, nie `article`/`class=*product*`; w każdym wierszu jest `Do koszyka`.
   const inList = scope.getByRole('button', { name: /Do koszyka/i });
   if ((await inList.count().catch(() => 0)) > productIndex) {
     const b = inList.nth(productIndex);
@@ -634,6 +680,25 @@ function parsePlPriceForListing(s: string): number {
     return parseFloat(t0);
   }
   return parsePlPrice(t0);
+}
+
+/**
+ * Koszyk intercars.pl: ceny w PLN (np. „8.08 PLN"), lista — „8,08 zł"; porównujemy równoważne zapisy.
+ */
+export function cartPageContainsListPrice(bodyText: string, price: number): boolean {
+  if (!Number.isFinite(price) || price < 0) return false;
+  const flat = bodyText.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ');
+  const nosp = flat.replace(/[\s\u00a0\u202f]/g, '');
+  const dot2 = price.toFixed(2);
+  const com2 = dot2.replace('.', ',');
+  if (nosp.includes(dot2) || flat.includes(dot2)) return true;
+  if (nosp.includes(com2) || flat.includes(com2)) return true;
+  const re = new RegExp(dot2.replace(/\./, String.raw`[.,]`), 'i');
+  if (re.test(flat) || re.test(nosp)) return true;
+  const l = nosp.toLowerCase();
+  if (l.includes(dot2 + 'pln') || l.includes(com2 + 'pln')) return true;
+  if (l.includes(dot2 + 'zł') || l.includes(com2 + 'zł')) return true;
+  return false;
 }
 
 export async function readCartGrandTotal(page: Page): Promise<number> {

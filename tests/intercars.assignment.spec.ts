@@ -14,6 +14,7 @@ import {
   readListPricesForFirstProducts,
   readCartGrandTotal,
   acceptCookiesIfVisible,
+  cartPageContainsListPrice,
 } from './helpers/intercars';
 
 /**
@@ -117,9 +118,11 @@ test('Intercars: каталог, фильтр, корзина, цены', async 
     const body = (await page.locator('body').innerText()).replace(/\s+/g, ' ');
     for (const p of savedListPrices) {
       const s1 = p.toFixed(2).replace('.', ',');
-      const s2 = p.toFixed(2);
-      const ok = body.includes(s1) || body.replace(/\s/g, '').includes(s1.replace(/\s/g, '')) || body.includes(s2);
-      expect(ok, `Koszyk: oczekiwano ceny z listy (ok. ${s1} zł)`).toBeTruthy();
+      const ok = cartPageContainsListPrice(body, p);
+      expect(
+        ok,
+        `Koszyk: cena z listy (~${s1} zł / ${p.toFixed(2)} PLN) brak w tekście (sklep może pokazać 8.08 zamiast 8,08)`,
+      ).toBeTruthy();
     }
     const total = await readCartGrandTotal(page);
     if (Number.isFinite(total) && total > 0) {
