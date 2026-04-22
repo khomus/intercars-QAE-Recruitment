@@ -283,6 +283,17 @@ export function bodyContainsPlCount(plain: string, n: number): boolean {
 }
 
 /**
+ * Ostatnia strona w `ul.gc-pagination` × pozycje/strona → [lo,hi] łącznie (np. 3963×30=118 890, lo=118 861).
+ * Jeśli krok 3 = liczba z oferty, powinna wpadać w przedział, gdy sklep nie drukuje „1–30 z 118 878" w #gc-main.
+ */
+function totalFitsPaginationBounds(expected: number, maxPage: number, per: number): boolean {
+  if (maxPage < 1 || per < 1) return false;
+  const lo = (maxPage - 1) * per + 1;
+  const hi = maxPage * per;
+  return expected >= lo && expected <= hi;
+}
+
+/**
  * Suma/łączna z listingu: „N produktów", „1–30 z 11 188", itd. — tylko z wąskiego wycinka DOM.
  * `expectedFromKrok3` — skrót, gdy liczba w formacie 118 878/118878 występuje tylko w tym wycinku
  * (bez skanowania wszystkich producentów w filtrach).
@@ -303,6 +314,10 @@ export async function readListingTotalCount(
       if (h1m) out.push((h1m as HTMLElement).innerText || '');
       const br = document.querySelector('.breadcrumb, [class*="breadcrumb" i]') as HTMLElement | null;
       if (br) out.push(br.innerText || '');
+      for (const sel of ['.baner-header', 'ul.gc-pagination', '.baner-header-B2C']) {
+        const el = document.querySelector(sel) as HTMLElement | null;
+        if (el) out.push(el.innerText || '');
+      }
       for (const sel of [
         '[class*="list-header" i]',
         '[class*="search-result" i]',
@@ -377,10 +392,74 @@ export async function readListingTotalCount(
   };
 
   const r = tryParse(u);
-  if (r == null && process.env.INTERCARS_DEBUG === '1') {
-    console.log('[DEBUG] readListingTotalCount: brak dopasowania, wycinek (max 2k znaków):', u.slice(0, 2000));
+  if (r != null) return r;
+
+  const pagBounds = await page
+    .evaluate(() => {
+      const pag = document.querySelector('ul.gc-pagination, .gc-pagination') as HTMLElement | null;
+      let maxP = 1;
+      if (pag) {
+        for (const li of pag.querySelectorAll('li[data-gc-action="fo-page"]')) {
+          const dp = li.getAttribute('data-page');
+          if (dp && /^\d+$/.test(dp)) {
+            const n = parseInt(dp, 10);
+            if (n > 0) maxP = Math.max(maxP, n);
+          }
+        }
+        for (const a of pag.querySelectorAll('a[href*="page="]')) {
+          const m = (a as HTMLAnchorElement).href.match(/[?&]page=(\d+)/i);
+          if (m) {
+            const n = parseInt(m[1]!, 10);
+            if (n > 0) maxP = Math.max(maxP, n);
+          }
+        }
+      }
+      if (maxP < 1) return null;
+      const sel = document.querySelector('select.item-on-page') as HTMLSelectElement | null;
+      let per = 30;
+      if (sel) {
+        const o = sel.options[sel.selectedIndex];
+        if (o?.value) {
+          const n = parseInt(String(o.value).replace(/\D/g, ''), 10);
+          if (Number.isFinite(n) && n > 0) per = n;
+        }
+      } else {
+        const st = document.querySelector('#gcSelectPage .gc-select-text.selected') as HTMLElement | null;
+        if (st) {
+          const n = parseInt((st.textContent || '30').replace(/\D/g, ''), 10);
+          if (Number.isFinite(n) && n > 0) per = n;
+        }
+      }
+      if (per < 1) per = 30;
+      return { maxP, per, lo: (maxP - 1) * per + 1, hi: maxP * per };
+    })
+    .catch(() => null);
+
+  if (pagBounds != null && expectedFromKrok3 != null) {
+    if (totalFitsPaginationBounds(expectedFromKrok3, pagBounds.maxP, pagBounds.per)) {
+      if (process.env.INTERCARS_DEBUG === '1') {
+        console.log(
+          '[DEBUG] readListingTotalCount: użycie kroku 3 =',
+          expectedFromKrok3,
+          '(zgodność z paginacją',
+          `max strona=${pagBounds.maxP},`,
+          `${pagBounds.per}/str., przedz. [${pagBounds.lo}, ${pagBounds.hi}]`,
+          ')',
+        );
+      }
+      return expectedFromKrok3;
+    }
   }
-  return r;
+
+  if (process.env.INTERCARS_DEBUG === '1') {
+    console.log(
+      '[DEBUG] readListingTotalCount: brak dopasowania, wycinek (max 2k znaków):',
+      u.slice(0, 2000),
+      'paginacja:',
+      pagBounds,
+    );
+  }
+  return null;
 }
 
 export async function clickFirstUsableListFilter(page: Page): Promise<void> {
