@@ -56,7 +56,7 @@ test('Intercars: каталог, фильтр, корзина, цены', async 
     if (process.env.INTERCARS_DEBUG === '1') {
       console.log('[DEBUG] url =', page.url());
     }
-    const listingTotal = await readListingTotalCount(page);
+    const listingTotal = await readListingTotalCount(page, expectedFromCategory);
     expect(
       listingTotal,
       'W nagłówku/liście brak czytelnej liczby produktów (Wynik / znaleziono / produktów)',

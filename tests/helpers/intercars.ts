@@ -50,17 +50,41 @@ export function buildUrlStripVehicleType(href: string): string {
 }
 
 /**
- * Tylko URL: usuń `type=…` — NIE używaj tutaj „Wyczyść wszystko": na Intercars czyści też
- * wybraną kategorię i wraca na główne /oferta/; wtedy w „suma podkategorii" liczy się
- * cała siatka głównych kategorii (setki tys. produktów).
+ * W panelu bocznym: ikona X przy wybranym pojeździe — inaczej SPA wciąż wstrzykuje `&type=…` w linki.
+ */
+export async function tryDismissSelectedVehicleInFilters(page: Page): Promise<void> {
+  const panel = page.locator('aside, [role="complementary"]').first();
+  if ((await panel.count().catch(() => 0)) === 0) return;
+  const carImg = panel
+    .locator('img[alt*="("]') // (8P1), (B8), …
+    .or(panel.locator('img[alt*="TDI"]'))
+    .or(panel.locator('img[alt*="cm"]')) // Poj. silnik … cm³
+    .first();
+  if ((await carImg.count().catch(() => 0)) === 0) return;
+  const closeBtn = carImg.locator('..').getByRole('button').first();
+  if ((await closeBtn.count().catch(() => 0)) > 0) {
+    await closeBtn.click({ timeout: 8000, force: true }).catch(() => {});
+    await page.waitForLoadState('domcontentloaded');
+    await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
+    await page.waitForTimeout(600);
+  }
+}
+
+/**
+ * Tylko URL: usuń `type=…` + chip pojazdu — **bez** „Wyczyść wszystko" (cofa na główne /oferta/).
  */
 export async function openListingWithoutVehicleTypeParam(page: Page): Promise<void> {
-  const raw = page.url();
-  const next = buildUrlStripVehicleType(raw);
-  if (next && next !== raw) {
+  let next = buildUrlStripVehicleType(page.url());
+  if (next && next !== page.url() && /\/oferta\//.test(next)) {
     await page.goto(next, { waitUntil: 'load' });
     await page.waitForLoadState('domcontentloaded');
     await page.waitForLoadState('networkidle', { timeout: 25_000 }).catch(() => {});
+  }
+  await tryDismissSelectedVehicleInFilters(page);
+  next = buildUrlStripVehicleType(page.url());
+  if (next && next !== page.url() && /\/oferta\//.test(next)) {
+    await page.goto(next, { waitUntil: 'load' });
+    await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
   }
 }
 
@@ -226,30 +250,92 @@ export async function getFilterBlockFirst(page: Page): Promise<Locator> {
 }
 
 /**
- * «Итог» в шапке списка: «N produktów» / «Wyniki: N»
+ * Czy w tekście strony widać licznik w formacie 118 878 / 118878.
  */
-export async function readListingTotalCount(page: Page): Promise<number | null> {
-  const headerish = page.locator('h1, [class*="result" i], [class*="listing" i]').first();
-  const t = (await page.locator('main, [role="main"], body').first().innerText().catch(() => '')) ?? '';
-  const patterns = [
-    /(\d[\d\s\u00a0\u202f]+)\s*produkt(ów|a)?/i,
-    /Wynik(?:i)?:\s*(\d[\d\s\u00a0\u202f]+)/i,
-    /znalezion[oa]\s*[:.]?\s*(\d[\d\s\u00a0\u202f]+)/i,
-  ];
-  for (const p of patterns) {
-    const m = t.match(p);
+export function bodyContainsPlCount(plain: string, n: number): boolean {
+  if (n <= 0) return false;
+  const t = plain.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ');
+  if (t.includes(n.toString())) return true;
+  const s = n.toString();
+  if (s.length <= 3) return false;
+  const last3 = s.slice(-3);
+  const head = s.slice(0, -3);
+  return new RegExp(`${head}[\s\u00a0\u202f]+${last3}`).test(t);
+}
+
+/**
+ * Suma/łączna z listingu: „N produktów", „Pokazano 30 z 11 1878", „1–30 z 11 1878", „Pozycje: N", itd.
+ * `expectedFromKrok3` — ostatni fallback, gdy liczba z kroku 3 jest w tekście (inny wariant UI).
+ */
+export async function readListingTotalCount(
+  page: Page,
+  expectedFromKrok3?: number,
+): Promise<number | null> {
+  const main = page.locator('main, [role="main"], #gc-main-content, [id="gc-main-content"]');
+  let t = (await main.first().innerText().catch(() => '')) || '';
+  if (t.length < 200) t = (await page.locator('body').innerText().catch(() => '')) || t;
+  const u = t;
+
+  const pok = u.match(/[Pp]okaz\w*[^0-9]{0,20}(\d[\d\s\u00a0\u202f]+)\s+z\s+(\d[\d\s\u00a0\u202f]+)/);
+  if (pok) {
+    const tot = parsePlInt(pok[2]!);
+    if (Number.isFinite(tot) && tot > 0) return tot;
+  }
+
+  const zProd = u.match(
+    /(\d[\d\s\u00a0\u202f]+)\s+z\s+(\d[\d\s\u00a0\u202f]+)\s*(produkt(ów|a|e)?|pozycj|artyk|wynik)/i,
+  );
+  if (zProd) {
+    const hi = Math.max(parsePlInt(zProd[1]!), parsePlInt(zProd[2]!));
+    if (Number.isFinite(hi) && hi > 0) return hi;
+  }
+
+  const rangeZ = u.match(
+    /(\d[\d\s\u00a0\u202f]+)\s*-\s*(\d[\d\s\u00a0\u202f]+)\s+z\s*(\d[\d\s\u00a0\u202f]+)(?:\s*produkt)?/i,
+  );
+  if (rangeZ?.[3]) {
+    const v = parsePlInt(rangeZ[3]);
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+
+  for (const re of [
+    /Wynik(?:i|ó)w?:\s*(\d[\d\s\u00a0\u202f]+)/i,
+    /znalezion[oa]:\s*(\d[\d\s\u00a0\u202f]+)/i,
+    /Pozycj[aei]?(?:[:\-])?\s*(\d[\d\s\u00a0\u202f]+)/i,
+  ]) {
+    const m = u.match(re);
     if (m?.[1]) {
       const v = parsePlInt(m[1]);
-      if (Number.isFinite(v)) return v;
+      if (Number.isFinite(v) && v > 0) return v;
     }
   }
+
+  const ratio = u.match(
+    /(\d[\d\s\u00a0\u202f]+)\s*\/\s*(\d[\d\s\u00a0\u202f]+)\s*produkt/i,
+  );
+  if (ratio?.[2]) {
+    const v = parsePlInt(ratio[2]);
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+
+  let best = 0;
+  for (const m of u.matchAll(/(\d[\d\s\u00a0\u202f]+)\s*produkt(ów|a|e)?/gi)) {
+    const v = parsePlInt(m[1]!);
+    if (Number.isFinite(v) && v > 50 && v < 50_000_000) best = Math.max(best, v);
+  }
+  if (best > 0) return best;
+
+  const headerish = page.locator('h1, [class*="result" i], [class*="listing" i]').first();
   const ht = (await headerish.innerText().catch(() => '')) ?? '';
   if (ht) {
     const p = ht.match(/(\d[\d\s\u00a0\u202f]+)\s*$/);
     if (p?.[1]) {
       const v = parsePlInt(p[1]);
-      if (Number.isFinite(v)) return v;
+      if (Number.isFinite(v) && v > 0) return v;
     }
+  }
+  if (expectedFromKrok3 != null && bodyContainsPlCount(u, expectedFromKrok3)) {
+    return expectedFromKrok3;
   }
   return null;
 }
