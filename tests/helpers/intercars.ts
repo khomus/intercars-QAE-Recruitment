@@ -31,26 +31,48 @@ export async function skipIfBlocked(page: Page): Promise<void> {
 }
 
 /**
- * Zdejmowanie "pojazdu" z query — bez tego strona pokazuje podkategorie z wąskim zestawem (suma np. 827)
- * a liczba z kroku 3 na /oferta/ dotyczy pełnej kategorii (np. 118 878).
+ * Usuwa `type=…` w query i w formie `...-id&type=…` (tak w linkach Intercars — inaczej `searchParams` nie ma `type`).
+ */
+export function buildUrlStripVehicleType(href: string): string {
+  if (!/type=/.test(href)) return href;
+  const strippedAmp = href.replace(/&type=[^&#?]*/gi, '');
+  try {
+    const u = new URL(strippedAmp);
+    u.searchParams.delete('type');
+    u.searchParams.delete('vehicle');
+    u.searchParams.delete('pojazd');
+    let s = u.toString();
+    s = s.replace(/[?&]$/g, '');
+    return s;
+  } catch {
+    return strippedAmp;
+  }
+}
+
+/**
+ * Zdejmowanie "pojazdu" w URL + klik „Wyczyść wszystko" (SPA), jeśli wciąż jest kontekst auta.
  */
 export async function openListingWithoutVehicleTypeParam(page: Page): Promise<void> {
   const raw = page.url();
-  let u: URL;
-  try {
-    u = new URL(raw);
-  } catch {
-    return;
+  const next = buildUrlStripVehicleType(raw);
+  if (next && next !== raw) {
+    await page.goto(next, { waitUntil: 'load' });
+    await page.waitForLoadState('domcontentloaded');
+    await page.waitForLoadState('networkidle', { timeout: 25_000 }).catch(() => {});
   }
-  if (u.searchParams.has('type')) u.searchParams.delete('type');
-  for (const k of [...u.searchParams.keys()]) {
-    if (k.toLowerCase() === 'vehicle' || k.toLowerCase() === 'pojazd') u.searchParams.delete(k);
+  await clearVehicleInFiltersUi(page);
+}
+
+async function clearVehicleInFiltersUi(page: Page): Promise<void> {
+  if (!/\/oferta\//.test(page.url())) return;
+  const clearAll = page.getByRole('link', { name: /Wyczyść wszystko|Wyczyść wszystkie/i });
+  if ((await clearAll.count().catch(() => 0)) > 0) {
+    await clearAll.first().click({ timeout: 10_000 }).catch(() => {});
+  } else {
+    await page.getByRole('button', { name: 'Wyczyść' }).last().click({ timeout: 5000 }).catch(() => {});
   }
-  const next = u.toString();
-  if (next === raw) return;
-  await page.goto(next, { waitUntil: 'load' });
-  await page.waitForLoadState('domcontentloaded');
-  await page.waitForLoadState('networkidle', { timeout: 25_000 }).catch(() => {});
+  await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
+  await page.waitForTimeout(500);
 }
 
 /**
