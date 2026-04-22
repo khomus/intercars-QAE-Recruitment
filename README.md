@@ -34,6 +34,17 @@ Raport HTML po uruchomieniu:
 npx playwright show-report
 ```
 
+## Debug (logi zliczeń, URL)
+
+W PowerShell przed `npx playwright test`:
+
+```powershell
+$env:INTERCARS_DEBUG = "1"
+npx playwright test tests/intercars.assignment.spec.ts --workers=1
+```
+
+Wypisze m.in. `[DEBUG] url` oraz w konsoli etykiety wierszy z sekcji filtra „Kategorie”.
+
 ## Uwagi
 
 - Interfejs serwisu jest po polsku (np. menu **WSZYSTKIE** → **Zobacz wszystkie** odpowiada opisowi *All* → *See all* w zadaniu).

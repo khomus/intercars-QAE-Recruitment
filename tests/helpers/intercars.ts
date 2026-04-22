@@ -50,7 +50,9 @@ export function buildUrlStripVehicleType(href: string): string {
 }
 
 /**
- * Zdejmowanie "pojazdu" w URL + klik „Wyczyść wszystko" (SPA), jeśli wciąż jest kontekst auta.
+ * Tylko URL: usuń `type=…` — NIE używaj tutaj „Wyczyść wszystko": na Intercars czyści też
+ * wybraną kategorię i wraca na główne /oferta/; wtedy w „suma podkategorii" liczy się
+ * cała siatka głównych kategorii (setki tys. produktów).
  */
 export async function openListingWithoutVehicleTypeParam(page: Page): Promise<void> {
   const raw = page.url();
@@ -60,38 +62,49 @@ export async function openListingWithoutVehicleTypeParam(page: Page): Promise<vo
     await page.waitForLoadState('domcontentloaded');
     await page.waitForLoadState('networkidle', { timeout: 25_000 }).catch(() => {});
   }
-  await clearVehicleInFiltersUi(page);
 }
 
-async function clearVehicleInFiltersUi(page: Page): Promise<void> {
-  if (!/\/oferta\//.test(page.url())) return;
-  const clearAll = page.getByRole('link', { name: /Wyczyść wszystko|Wyczyść wszystkie/i });
-  if ((await clearAll.count().catch(() => 0)) > 0) {
-    await clearAll.first().click({ timeout: 10_000 }).catch(() => {});
-  } else {
-    await page.getByRole('button', { name: 'Wyczyść' }).last().click({ timeout: 5000 }).catch(() => {});
-  }
-  await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
-  await page.waitForTimeout(500);
-}
+const DEBUG_KATEGORIE = process.env.INTERCARS_DEBUG === '1';
 
 /**
- * Suma tylko z sekcji „Kategorie" (linki oferty z (liczba) w tekście), a nie innych filtrów (Cena, Producent…).
+ * Suma tylko z wierszy podsekcji „Kategorie" w pasku filtrów (aside), pomiędzy „Kategorie" a
+ * następną sekcją (np. „Producent") — bez siatki głównych kategorii z głównej kolumny.
  */
 export async function sumKategorieSectionSubcounts(page: Page): Promise<{ sum: number; parts: number[] }> {
-  const title = page.getByText('Kategorie', { exact: true }).first();
-  if ((await title.count().catch(() => 0)) === 0) {
-    return { sum: 0, parts: [] };
+  const texts = await page.evaluate(() => {
+    const aside: HTMLElement | null = document.querySelector('aside, [role="complementary"]');
+    if (!aside) return { labels: [] as string[], debug: { reason: 'no-aside' } };
+    const paras = Array.from(aside.querySelectorAll('p'));
+    const kIdx = paras.findIndex((p) => (p.textContent || '').trim() === 'Kategorie');
+    if (kIdx < 0) return { labels: [] as string[], debug: { reason: 'no-kategorie-p' } };
+    const pKat = paras[kIdx]!;
+    const pEndI = paras.findIndex((p, i) => {
+      if (i <= kIdx) return false;
+      const t = (p.textContent || '').trim();
+      // „Producent" albo „Polecane" — prawdziwa granica sekcji podkategorii (NIE „Cena" wyżej w aside)
+      return t === 'Producent' || t === 'Polecane';
+    });
+    const pEnd = pEndI >= 0 ? (paras[pEndI] as HTMLElement) : null;
+    const labels: string[] = [];
+    const following = (a: Node, b: Node) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    const isBetween = (el: Element) => {
+      if (!following(pKat, el)) return false; // el po sekcji „Kategorie"
+      if (pEnd == null) return true;
+      return following(el, pEnd); // koniec sekcji (Producent / Polecane / Cena) dalej niż el
+    };
+    for (const a of Array.from(aside.querySelectorAll('a[href*="/oferta/"]'))) {
+      if (!isBetween(a)) continue;
+      const t = (a.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!/\([0-9]/.test(t) || t.length > 500) continue;
+      labels.push(t);
+    }
+    return { labels, debug: { count: labels.length, href: document.location?.href || '' } };
+  });
+  if (DEBUG_KATEGORIE) {
+    console.log('[INTERCARS_DEBUG] Kategorie', JSON.stringify(texts, null, 0));
   }
-  const group = title.locator('..').locator('..');
-  const links = group
-    .locator('a[href*="/oferta/"]')
-    .filter({ hasText: /\([0-9][\d\s\u00a0\u202f]*\)/ });
-  const n = await links.count();
   const parts: number[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = (await links.nth(i).innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
-    if (t.length > 400) continue;
+  for (const t of texts.labels) {
     const paren = t.match(/\(([\d\s\u00a0\u202f]+)\)\s*$/);
     if (!paren) continue;
     const v = parsePlInt(paren[1] ?? '');

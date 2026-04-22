@@ -49,16 +49,22 @@ test('Intercars: каталог, фильтр, корзина, цены', async 
   });
 
   await test.step('Weryfikacja: filtry (suma podkategorii = krok 3) i nagłówek listy', async () => {
-    // Bez `type=…` w URL lista dotyczy całej kategorii (jak w kroku 3), a nie tylko wybranego auta
+    // Usunięcie `&type=…` z URL — bez „Wyczyść wszystko" (cofa na /oferta/ i psuje zliczenia).
     await openListingWithoutVehicleTypeParam(page);
     await acceptCookiesIfVisible(page);
 
-    const listingTotal = await readListingTotalCount(page);
-    if (listingTotal !== null) {
-      expect(listingTotal, 'Liczba w liście powinna odpowiadać kategorii z kroku 3').toBe(
-        expectedFromCategory,
-      );
+    if (process.env.INTERCARS_DEBUG === '1') {
+      console.log('[DEBUG] url =', page.url());
     }
+    const listingTotal = await readListingTotalCount(page);
+    expect(
+      listingTotal,
+      'W nagłówku/liście brak czytelnej liczby produktów (Wynik / znaleziono / produktów)',
+    ).not.toBeNull();
+    if (listingTotal == null) return;
+    expect(listingTotal, 'Liczba w liście = krok 3 (karta kategorii /oferta/)').toBe(
+      expectedFromCategory,
+    );
 
     let { sum, parts } = await sumKategorieSectionSubcounts(page);
     if (parts.length === 0) {
@@ -67,14 +73,11 @@ test('Intercars: каталог, фильтр, корзина, цены', async 
       sum = fb.sum;
       parts = fb.parts;
     }
-    expect(
-      parts.length,
-      'Oczekiwano sekcji Kategorie z linkami i licznikami (lub innego bloku filtrów)',
-    ).toBeGreaterThan(0);
-    expect(
-      sum,
-      `Suma (pod)kategorii w menu filtrów (${sum}) = liczba z kroku 3 (${expectedFromCategory})`,
-    ).toBe(expectedFromCategory);
+    expect(parts.length, 'Oczekiwano wierszy w filtrze „Kategorie" z licznikami').toBeGreaterThan(0);
+    // Suma tylko z aside między Kategorie → Producent/Polecane; powinna = temu, co w nagłówku (i w kroku 3)
+    expect(sum, `Suma wierszy „Kategorie" w filtrze (${sum}) = liczba w liście (${listingTotal})`).toBe(
+      listingTotal,
+    );
   });
 
   await test.step('Zastosuj jeden z filtrów (pierwszy użyteczny)', async () => {
