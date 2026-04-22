@@ -115,14 +115,22 @@ test('Intercars: каталог, фильтр, корзина, цены', async 
 
   await test.step('Koszyk: ceny i suma', async () => {
     await page.goto('/cart', { waitUntil: 'load' });
+    await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
     await acceptCookiesIfVisible(page);
     const body = (await page.locator('body').innerText()).replace(/\s+/g, ' ');
+    const pusty = /\bkoszyk (jest )?pusty|pusty (twój )?koszy|brak (produkt|pozycji)|the cart (is )?empty\b/i.test(
+      body,
+    );
+    expect(
+      pusty,
+      'Koszyk: brak pozycji („jest pusty”) — ceny z listy nie wystąpią; w poprzednim kroku 2× „Do koszyka” musi zapisać sesję, bez przeładowania, które czyści wózek.',
+    ).toBeFalsy();
     for (const p of savedListPrices) {
       const s1 = p.toFixed(2).replace('.', ',');
       const ok = cartPageContainsListPrice(body, p);
       expect(
         ok,
-        `Koszyk: cena z listy (~${s1} zł / ${p.toFixed(2)} PLN) brak w tekście (sklep może pokazać 8.08 zamiast 8,08)`,
+        `Koszyk: cena z listy (~${s1} zł) nie wykryta w body (gdy wózek niepusty — liczymy warianty 8,08/8.08/PLN). Body zaczyna: ${body.slice(0, 200)}…`,
       ).toBeTruthy();
     }
     const total = await readCartGrandTotal(page);

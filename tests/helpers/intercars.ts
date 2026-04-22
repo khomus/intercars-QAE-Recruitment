@@ -583,6 +583,8 @@ export async function addToCartByIndex(page: Page, productIndex: number): Promis
     return false;
   }, productIndex);
   if (clicked) {
+    await page.waitForLoadState('domcontentloaded');
+    await page.waitForLoadState('networkidle', { timeout: 12_000 }).catch(() => {});
     return;
   }
   const main = page.locator('#gc-main-content, [id="gc-main-content"], main, [id="main"], [role="main"]').first();
@@ -701,12 +703,15 @@ function parsePlPriceForListing(s: string): number {
 }
 
 /**
- * Koszyk intercars.pl: ceny w PLN (np. „8.08 PLN"), lista — „8,08 zł"; porównujemy równoważne zapisy.
+ * Koszyk intercars.pl: ceny w PLN (np. „8.08 PLN", „8,08 zł", czasem tylko cyfry w komórkach tabeli);
+ * wykryj też „8, 08" / cienką spację, „8·08" i porównaj liczbowo.
  */
-export function cartPageContainsListPrice(bodyText: string, price: number): boolean {
+export function cartPageContainsListPrice(bodyText: string, price: number, eps = 0.03): boolean {
   if (!Number.isFinite(price) || price < 0) return false;
   const flat = bodyText.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ');
-  const nosp = flat.replace(/[\s\u00a0\u202f]/g, '');
+  const nosp = flat
+    .replace(/[\s\u00a0\u202f\u2007]/g, '')
+    .replace(String.fromCharCode(0x00a0), '');
   const dot2 = price.toFixed(2);
   const com2 = dot2.replace('.', ',');
   if (nosp.includes(dot2) || flat.includes(dot2)) return true;
@@ -716,6 +721,15 @@ export function cartPageContainsListPrice(bodyText: string, price: number): bool
   const l = nosp.toLowerCase();
   if (l.includes(dot2 + 'pln') || l.includes(com2 + 'pln')) return true;
   if (l.includes(dot2 + 'zł') || l.includes(com2 + 'zł')) return true;
+  const forTokens = bodyText
+    .replace(/[\s\u00a0\u202f\u2007]/g, ' ')
+    .replace(/[·]/g, ',');
+  for (const m of forTokens.matchAll(/\d{1,3}(?:[ .]\d{3})*(?:[.,]\d{1,2})?|\d+[.,]\d{1,2}/g)) {
+    const v = parsePlPrice(m[0]!);
+    if (Number.isFinite(v) && Math.abs(v - price) <= eps) {
+      return true;
+    }
+  }
   return false;
 }
 
