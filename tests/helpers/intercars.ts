@@ -31,6 +31,54 @@ export async function skipIfBlocked(page: Page): Promise<void> {
 }
 
 /**
+ * Zdejmowanie "pojazdu" z query — bez tego strona pokazuje podkategorie z wąskim zestawem (suma np. 827)
+ * a liczba z kroku 3 na /oferta/ dotyczy pełnej kategorii (np. 118 878).
+ */
+export async function openListingWithoutVehicleTypeParam(page: Page): Promise<void> {
+  const raw = page.url();
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return;
+  }
+  if (u.searchParams.has('type')) u.searchParams.delete('type');
+  for (const k of [...u.searchParams.keys()]) {
+    if (k.toLowerCase() === 'vehicle' || k.toLowerCase() === 'pojazd') u.searchParams.delete(k);
+  }
+  const next = u.toString();
+  if (next === raw) return;
+  await page.goto(next, { waitUntil: 'load' });
+  await page.waitForLoadState('domcontentloaded');
+  await page.waitForLoadState('networkidle', { timeout: 25_000 }).catch(() => {});
+}
+
+/**
+ * Suma tylko z sekcji „Kategorie" (linki oferty z (liczba) w tekście), a nie innych filtrów (Cena, Producent…).
+ */
+export async function sumKategorieSectionSubcounts(page: Page): Promise<{ sum: number; parts: number[] }> {
+  const title = page.getByText('Kategorie', { exact: true }).first();
+  if ((await title.count().catch(() => 0)) === 0) {
+    return { sum: 0, parts: [] };
+  }
+  const group = title.locator('..').locator('..');
+  const links = group
+    .locator('a[href*="/oferta/"]')
+    .filter({ hasText: /\([0-9][\d\s\u00a0\u202f]*\)/ });
+  const n = await links.count();
+  const parts: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const t = (await links.nth(i).innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+    if (t.length > 400) continue;
+    const paren = t.match(/\(([\d\s\u00a0\u202f]+)\)\s*$/);
+    if (!paren) continue;
+    const v = parsePlInt(paren[1] ?? '');
+    if (Number.isFinite(v) && v > 0) parts.push(v);
+  }
+  return { sum: parts.reduce((a, b) => a + b, 0), parts };
+}
+
+/**
  * Wszystkie (меню) → Zobacz wszystkie
  */
 export async function openAllSeeAllCatalog(page: Page): Promise<void> {

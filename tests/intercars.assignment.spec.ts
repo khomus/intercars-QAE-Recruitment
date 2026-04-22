@@ -5,6 +5,8 @@ import {
   listCategoriesWithProductCounts,
   pickLargest,
   getFilterBlockFirst,
+  openListingWithoutVehicleTypeParam,
+  sumKategorieSectionSubcounts,
   sumFilterRowCounts,
   readListingTotalCount,
   clickFirstUsableListFilter,
@@ -47,22 +49,31 @@ test('Intercars: каталог, фильтр, корзина, цены', async 
   });
 
   await test.step('Weryfikacja: filtry (suma podkategorii = krok 3) i nagłówek listy', async () => {
+    // Bez `type=…` w URL lista dotyczy całej kategorii (jak w kroku 3), a nie tylko wybranego auta
+    await openListingWithoutVehicleTypeParam(page);
+    await acceptCookiesIfVisible(page);
+
     const listingTotal = await readListingTotalCount(page);
     if (listingTotal !== null) {
-      expect(listingTotal, 'Liczba z nagłówka listy powinna odpowiadać kategorii').toBe(
+      expect(listingTotal, 'Liczba w liście powinna odpowiadać kategorii z kroku 3').toBe(
         expectedFromCategory,
       );
     }
 
-    const filter = await getFilterBlockFirst(page);
-    const { sum, parts } = await sumFilterRowCounts(filter);
+    let { sum, parts } = await sumKategorieSectionSubcounts(page);
+    if (parts.length === 0) {
+      const filter = await getFilterBlockFirst(page);
+      const fb = await sumFilterRowCounts(filter);
+      sum = fb.sum;
+      parts = fb.parts;
+    }
     expect(
       parts.length,
-      'Oczekiwano sekcji filtrów z wierszami (podkategorie) i licznikami w nawiasach',
+      'Oczekiwano sekcji Kategorie z linkami i licznikami (lub innego bloku filtrów)',
     ).toBeGreaterThan(0);
     expect(
       sum,
-      `Suma podkategorii w filtrach (${sum}) vs kategoria «${chosenName}» (${expectedFromCategory})`,
+      `Suma (pod)kategorii w menu filtrów (${sum}) = liczba z kroku 3 (${expectedFromCategory})`,
     ).toBe(expectedFromCategory);
   });
 
