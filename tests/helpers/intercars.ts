@@ -104,32 +104,35 @@ export async function openListingWithoutVehicleTypeParam(page: Page): Promise<vo
 const DEBUG_KATEGORIE = process.env.INTERCARS_DEBUG === '1';
 
 /**
- * Suma tylko z wierszy podsekcji „Kategorie" w pasku filtrów (aside), pomiędzy „Kategorie" a
- * następną sekcją (np. „Producent") — bez siatki głównych kategorii z głównej kolumny.
+ * Suma tylko z wierszy podsekcji „Kategorie" w panelu filtrów (aside **albo** B2C `#params_result` —
+ * Intercars nie zawsze używa `<aside>`), pomiędzy „Kategorie" a „Producent" / „Polecane".
  */
 export async function sumKategorieSectionSubcounts(page: Page): Promise<{ sum: number; parts: number[] }> {
   const texts = await page.evaluate(() => {
-    const aside: HTMLElement | null = document.querySelector('aside, [role="complementary"]');
-    if (!aside) return { labels: [] as string[], debug: { reason: 'no-aside' } };
-    const paras = Array.from(aside.querySelectorAll('p'));
-    const kIdx = paras.findIndex((p) => (p.textContent || '').trim() === 'Kategorie');
+    const filterRoot: HTMLElement | null = document.querySelector(
+      'aside, [role="complementary"], #params_result, [id="params_result"]',
+    );
+    if (!filterRoot) return { labels: [] as string[], debug: { reason: 'no-filter-panel' } };
+    const paras = Array.from(filterRoot.querySelectorAll('p'));
+    const kIdx = paras.findIndex(
+      (p) => (p.textContent || '').replace(/\s+/g, ' ').trim() === 'Kategorie',
+    );
     if (kIdx < 0) return { labels: [] as string[], debug: { reason: 'no-kategorie-p' } };
     const pKat = paras[kIdx]!;
     const pEndI = paras.findIndex((p, i) => {
       if (i <= kIdx) return false;
-      const t = (p.textContent || '').trim();
-      // „Producent" albo „Polecane" — prawdziwa granica sekcji podkategorii (NIE „Cena" wyżej w aside)
-      return t === 'Producent' || t === 'Polecane';
+      const t = (p.textContent || '').replace(/\s+/g, ' ').trim();
+      return t === 'Producent' || t === 'Polecane' || t.startsWith('Producent');
     });
     const pEnd = pEndI >= 0 ? (paras[pEndI] as HTMLElement) : null;
     const labels: string[] = [];
     const following = (a: Node, b: Node) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
     const isBetween = (el: Element) => {
-      if (!following(pKat, el)) return false; // el po sekcji „Kategorie"
+      if (!following(pKat, el)) return false;
       if (pEnd == null) return true;
-      return following(el, pEnd); // koniec sekcji (Producent / Polecane / Cena) dalej niż el
+      return following(el, pEnd);
     };
-    for (const a of Array.from(aside.querySelectorAll('a[href*="/oferta/"]'))) {
+    for (const a of Array.from(filterRoot.querySelectorAll('a[href*="/oferta/"]'))) {
       if (!isBetween(a)) continue;
       const t = (a.textContent || '').replace(/\s+/g, ' ').trim();
       if (!/\([0-9]/.test(t) || t.length > 500) continue;
