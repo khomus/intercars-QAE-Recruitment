@@ -247,8 +247,14 @@ export async function sumFilterRowCounts(filter: Locator): Promise<{ sum: number
 
 /**
  * Сумма из фильтра: слева/боковая колонка с вложенностями.
+ * B2C: панель `#params_result` — тот же контекст, co sekcja „Kategorie", nie zawsze `<aside>`.
  */
 export async function getFilterBlockFirst(page: Page): Promise<Locator> {
+  const params = page.locator('#params_result');
+  if ((await params.count().catch(() => 0)) > 0) {
+    const t = (await params.first().innerText().catch(() => '')) ?? '';
+    if (t.length > 20 && /\(.*\d.*\)/.test(t)) return params.first();
+  }
   const candidates = [
     page.getByRole('complementary'),
     page.locator('[class*="filter" i]'),
@@ -467,17 +473,49 @@ export async function readListingTotalCount(
 
 export async function clickFirstUsableListFilter(page: Page): Promise<void> {
   const block = await getFilterBlockFirst(page);
+  // Intercars: natywny <input type=checkbox> bywa ukryty (custom UI) — brak widoczności,
+  // scrollIntoViewIfNeeded czeka w nieskończoność. Zwykle działa getByRole / label.
+  const a11y = block.getByRole('checkbox', { disabled: false });
+  if ((await a11y.count()) > 0) {
+    const first = a11y.first();
+    try {
+      await first.scrollIntoViewIfNeeded({ timeout: 12_000 });
+    } catch {
+      /* wciąż możliwy click */
+    }
+    await first
+      .click({ timeout: 20_000 })
+      .catch(async () => {
+        await first.click({ force: true, timeout: 15_000 });
+      });
+    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
+    return;
+  }
+  const labeled = block.locator('label:has(input[type="checkbox"]:not(:disabled))').first();
+  if ((await labeled.count()) > 0) {
+    try {
+      await labeled.scrollIntoViewIfNeeded({ timeout: 10_000 });
+    } catch {
+      /* */
+    }
+    await labeled
+      .click({ timeout: 20_000 })
+      .catch(async () => {
+        await labeled.click({ force: true, timeout: 15_000 });
+      });
+    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
+    return;
+  }
   const checkbox = block.locator('input[type="checkbox"]:not(:disabled)').first();
   if ((await checkbox.count()) > 0) {
-    await checkbox.scrollIntoViewIfNeeded();
-    await checkbox.click({ force: true }).catch(() => checkbox.click());
-    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await checkbox.click({ force: true, timeout: 20_000 });
+    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
     return;
   }
   const other = block.getByRole('link', { name: /\(\d/ }).first();
   if ((await other.count().catch(() => 0)) > 0) {
     await other.click();
-    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
   }
 }
 
