@@ -50,42 +50,55 @@ export function buildUrlStripVehicleType(href: string): string {
 }
 
 /**
- * W panelu bocznym: ikona X przy wybranym pojeździe — inaczej SPA wciąż wstrzykuje `&type=…` w linki.
+ * W panelu bocznym: X przy pojeździe (pierwszy wiersz z <img> — miniaturowy pojazd).
+ * Po samym `goto` bez `type=` SPA dalej może utrzymywać pojazd w stanie; bez tego
+ * linki w filtrach mają `&type=…` i w main nie ma łącznej liczby ofert jak na karcie /oferta/.
  */
 export async function tryDismissSelectedVehicleInFilters(page: Page): Promise<void> {
-  const panel = page.locator('aside, [role="complementary"]').first();
-  if ((await panel.count().catch(() => 0)) === 0) return;
-  const carImg = panel
-    .locator('img[alt*="("]') // (8P1), (B8), …
-    .or(panel.locator('img[alt*="TDI"]'))
-    .or(panel.locator('img[alt*="cm"]')) // Poj. silnik … cm³
+  const comp = page.getByRole('complementary').first();
+  if ((await comp.count().catch(() => 0)) === 0) return;
+  // Wąski zakres: div z <img> pojazdu (kategoria ma button z tekstem, nie tylko img)
+  let vRow = comp
+    .locator('div')
+    .filter({ has: comp.locator(`> img[alt*="("]`) })
     .first();
-  if ((await carImg.count().catch(() => 0)) === 0) return;
-  const closeBtn = carImg.locator('..').getByRole('button').first();
-  if ((await closeBtn.count().catch(() => 0)) > 0) {
-    await closeBtn.click({ timeout: 8000, force: true }).catch(() => {});
-    await page.waitForLoadState('domcontentloaded');
-    await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
-    await page.waitForTimeout(600);
+  if ((await vRow.count().catch(() => 0)) === 0) {
+    vRow = comp
+      .locator('div')
+      .filter({ has: comp.locator('> img[alt*="TDI"]') })
+      .first();
   }
+  if ((await vRow.count().catch(() => 0)) === 0) return;
+  // img → w tej samej sekcji pierwsze „×" (NIE chip kategorii obok, jeśli jest w innym div)
+  const closeBtn = vRow.getByRole('button').first();
+  if ((await closeBtn.count().catch(() => 0)) === 0) return;
+  await closeBtn.scrollIntoViewIfNeeded();
+  await closeBtn.click({ timeout: 10_000, force: true }).catch(() => {});
+  await page.waitForLoadState('domcontentloaded');
+  await page.waitForTimeout(1200);
 }
 
 /**
  * Tylko URL: usuń `type=…` + chip pojazdu — **bez** „Wyczyść wszystko" (cofa na główne /oferta/).
+ * Powtórz, jeśli w URL wciąż widać `type=…` (hydracja wstrzyknie parametr znowu).
  */
 export async function openListingWithoutVehicleTypeParam(page: Page): Promise<void> {
-  let next = buildUrlStripVehicleType(page.url());
-  if (next && next !== page.url() && /\/oferta\//.test(next)) {
-    await page.goto(next, { waitUntil: 'load' });
+  for (let i = 0; i < 2; i++) {
+    let next = buildUrlStripVehicleType(page.url());
+    if (next && /\/oferta\//.test(next) && next !== page.url()) {
+      await page.goto(next, { waitUntil: 'load', timeout: 60_000 });
+      await page.waitForLoadState('domcontentloaded');
+    }
+    await tryDismissSelectedVehicleInFilters(page);
+    if (!/type=|pojazd=/i.test(page.url())) break;
+  }
+  const finalStrip = buildUrlStripVehicleType(page.url());
+  if (finalStrip && /\/oferta\//.test(finalStrip) && finalStrip !== page.url()) {
+    await page.goto(finalStrip, { waitUntil: 'load', timeout: 60_000 });
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForLoadState('networkidle', { timeout: 25_000 }).catch(() => {});
   }
   await tryDismissSelectedVehicleInFilters(page);
-  next = buildUrlStripVehicleType(page.url());
-  if (next && next !== page.url() && /\/oferta\//.test(next)) {
-    await page.goto(next, { waitUntil: 'load' });
-    await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
-  }
+  await page.waitForTimeout(400);
 }
 
 const DEBUG_KATEGORIE = process.env.INTERCARS_DEBUG === '1';
@@ -291,7 +304,7 @@ export async function readListingTotalCount(
   }
 
   const rangeZ = u.match(
-    /(\d[\d\s\u00a0\u202f]+)\s*-\s*(\d[\d\s\u00a0\u202f]+)\s+z\s*(\d[\d\s\u00a0\u202f]+)(?:\s*produkt)?/i,
+    /(\d[\d\s\u00a0\u202f]+)\s*[-–]\s*(\d[\d\s\u00a0\u202f]+)\s+z\s*(\d[\d\s\u00a0\u202f]+)(?:\s*produkt)?/i,
   );
   if (rangeZ?.[3]) {
     const v = parsePlInt(rangeZ[3]);
