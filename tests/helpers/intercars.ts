@@ -18,6 +18,24 @@ export async function acceptCookiesIfVisible(page: Page): Promise<void> {
   await btn.click({ timeout: 12000 }).catch(() => {});
 }
 
+/**
+ * Po „Do koszyka” bywa wyrób / pasek; bez krótkiego `timeout` klik czeka na domyślne 30+ s, co pożera limit testu.
+ * Escape tylko na żywym `page` (gdy użytkownik zamknie przeglądarkę — nie wyrzucaj).
+ */
+export async function dismissPostAddToCartOverlayIfVisible(page: Page): Promise<void> {
+  if (page.isClosed()) return;
+  const okno = page.getByRole('button', { name: /kontynuuj|powrót|zamknij|kupuj dalej|×/i });
+  if ((await okno.count().catch(() => 0)) > 0) {
+    await okno.first().click({ timeout: 5_000 }).catch(() => {});
+  }
+  if (page.isClosed()) return;
+  try {
+    await page.keyboard.press('Escape');
+  } catch {
+    /* kontekst zamknięty; nie rzucaj po timeout/ctrl+c */
+  }
+}
+
 export function isChallengeOrWaitPage(page: Page): Promise<boolean> {
   return page
     .title()

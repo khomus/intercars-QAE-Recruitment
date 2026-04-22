@@ -15,6 +15,7 @@ import {
   readCartGrandTotal,
   acceptCookiesIfVisible,
   cartPageContainsListPrice,
+  dismissPostAddToCartOverlayIfVisible,
 } from './helpers/intercars';
 
 /**
@@ -106,10 +107,10 @@ test('Intercars: каталог, фильтр, корзина, цены', async 
 
     await addToCartByIndex(page, 0);
     await page.waitForTimeout(500);
-    await page.getByRole('button', { name: /kontynuuj|powrót|zamknij|kupuj dalej|×/i }).first().click().catch(() => page.keyboard.press('Escape'));
+    await dismissPostAddToCartOverlayIfVisible(page);
     await acceptCookiesIfVisible(page);
     await addToCartByIndex(page, 1);
-    await page.getByRole('button', { name: /kontynuuj|powrót|zamknij|kupuj dalej|×/i }).first().click().catch(() => page.keyboard.press('Escape'));
+    await dismissPostAddToCartOverlayIfVisible(page);
   });
 
   await test.step('Koszyk: ceny i suma', async () => {
