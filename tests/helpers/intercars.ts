@@ -520,47 +520,120 @@ export async function clickFirstUsableListFilter(page: Page): Promise<void> {
 }
 
 export async function addToCartByIndex(page: Page, productIndex: number): Promise<void> {
+  const main = page.locator('#gc-main-content, [id="gc-main-content"], main, [id="main"], [role="main"]').first();
+  const scope = (await main.count().catch(() => 0)) > 0 ? main : page;
+  // Lista B2C: płytki w `div`, nie `article`/`class=*product*`; w każdym wierszu jest `Do koszyka`.
+  const inList = scope.getByRole('button', { name: /Do koszyka/i });
+  if ((await inList.count().catch(() => 0)) > productIndex) {
+    const b = inList.nth(productIndex);
+    try {
+      await b.scrollIntoViewIfNeeded({ timeout: 20_000 });
+    } catch {
+      /* klik wymuszony */
+    }
+    await b.click({ timeout: 20_000 }).catch(() => b.click({ force: true, timeout: 15_000 }));
+    return;
+  }
   let cards = page
-    .locator('[class*="product" i], [data-product], article, [class*="tile" i]')
-    .filter({ hasText: /Dodaj|Koszy|zł/ });
-  if ((await cards.count()) === 0) {
+    .locator('[class*="product" i], [data-product], a[href*="/produkty/"], article, [class*="tile" i]')
+    .filter({ hasText: /Dodaj|Koszy|zł|Do koszyka/i });
+  if ((await cards.count().catch(() => 0)) === 0) {
+    cards = page.getByRole('listitem').filter({ hasText: /zł|Do koszyka/i });
+  }
+  if ((await cards.count().catch(() => 0)) === 0) {
     cards = page.getByRole('listitem');
   }
   if ((await cards.count()) > productIndex) {
     const card = cards.nth(productIndex);
     const add = card
-      .getByRole('button', { name: /Dodaj|Koszy|kupuj/i })
+      .getByRole('button', { name: /Dodaj|Do koszyka|Koszy|kupuj/i })
       .or(card.locator('a[href*="basket" i], a[href*="cart" i]'))
       .first();
-    await add.scrollIntoViewIfNeeded();
-    await add.click({ timeout: 20000 });
+    await add.scrollIntoViewIfNeeded().catch(() => {});
+    await add.click({ force: true, timeout: 20000 }).catch(() => {});
     return;
   }
-  const btn = page.getByRole('button', { name: /Dodaj do koszyka|Dodaj|Koszy/i }).nth(productIndex);
-  await btn.scrollIntoViewIfNeeded();
-  await btn.click({ timeout: 20000 });
+  const btn = page
+    .getByRole('button', { name: /Dodaj do koszyka|Dodaj|Do koszyka|Koszy/i })
+    .nth(productIndex);
+  await btn.scrollIntoViewIfNeeded().catch(() => {});
+  await btn.click({ force: true, timeout: 20000 }).catch(() => {});
 }
 
+/**
+ * Ceny w liście B2C: kafel to często `div` (nie `article`), link `/produkty/…` i „8,08” / „8.08” + `zł`
+ * w poddrzewie; wzorzec tylko z przecinkiem łamał wykrywanie, a selektor tylko po `product`/`article` miał 0 wyników.
+ */
 export async function readListPricesForFirstProducts(
   page: Page,
   take: number,
 ): Promise<{ title: string; price: number }[]> {
-  const cards = page
-    .locator('[class*="product" i], [data-product], li[class*="item" i], article')
-    .filter({ hasText: /zł/ });
-  const n = await cards.count();
-  const res: { title: string; price: number }[] = [];
-  const limit = Math.min(take, n);
-  for (let i = 0; i < limit; i++) {
-    const c = cards.nth(i);
-    const raw = (await c.innerText()).replace(/\s+/g, ' ');
-    const zl = raw.match(/([\d\s\u00a0]+,?\d*)\s*zł/i);
-    if (!zl) continue;
-    const price = parsePlPrice(zl[1] ?? '');
-    const title = (await c.locator('a, h2, h3, [class*="name" i]').first().textContent().catch(() => null)) || raw.slice(0, 80);
-    if (Number.isFinite(price) && price > 0) res.push({ title: (title || '').trim(), price });
+  const raw = await page.evaluate((taken: number) => {
+    const res: { title: string; priceStr: string }[] = [];
+    const main: HTMLElement | null =
+      (document.querySelector('#gc-main-content') as HTMLElement | null) ||
+      (document.querySelector('#gcMainContent') as HTMLElement | null) ||
+      (document.querySelector('main') as HTMLElement | null) ||
+      (document.querySelector('#main') as HTMLElement | null) ||
+      (document.querySelector('[role="main"]') as HTMLElement | null) ||
+      document.body;
+    const as = main.querySelectorAll<HTMLAnchorElement>('a[href*="/produkty/"]');
+    const byPath = new Map<string, HTMLAnchorElement>();
+    for (const a of as) {
+      let path = '';
+      try {
+        path = new URL(a.getAttribute('href') || a.href, document.baseURI).pathname;
+      } catch {
+        const h = a.getAttribute('href') || '';
+        if (!/produkt/.test(h)) continue;
+        path = h;
+      }
+      if (!/produkt/.test(path)) continue;
+      if (!byPath.has(path)) byPath.set(path, a);
+    }
+    for (const a of byPath.values()) {
+      if (res.length >= taken) break;
+      let el: Element | null = a;
+      for (let d = 0; d < 25 && el; d++) {
+        const full = (el as HTMLElement).innerText.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ');
+        if (full.length < 12) {
+          el = el.parentElement;
+          continue;
+        }
+        if (!/zł/i.test(full) || !/do\s*koszyka|koszyka|dodaj.*koszyk/i.test(full)) {
+          el = el.parentElement;
+          continue;
+        }
+        const pre = (full.split(/Darmowa\s+dostawa|Darmowa\s+dos/i)[0] ?? full).split(/dostawa\s+od/i)[0] ?? full;
+        const m = pre.match(/([\d\s,.\u00a0\u202f]+?)\s*zł/i);
+        if (!m?.[1]) {
+          el = el.parentElement;
+          continue;
+        }
+        const priceStr = m[1]!.replace(/\s+/g, '').replace(/\u00a0/g, '').replace(/\u202f/g, '');
+        const tEl = el.querySelector<HTMLElement>('h2 a, h2, h1 a, h3 a') || (a as HTMLElement);
+        const title = (tEl.textContent || a.textContent || '').replace(/\s+/g, ' ').trim() || pre.slice(0, 100);
+        res.push({ title, priceStr });
+        break;
+      }
+    }
+    return res;
+  }, take);
+  return raw
+    .map((r) => {
+      const price = parsePlPriceForListing(r.priceStr);
+      return { title: r.title.trim(), price } as { title: string; price: number };
+    })
+    .filter((r) => Number.isFinite(r.price) && r.price > 0);
+}
+
+function parsePlPriceForListing(s: string): number {
+  if (!s?.trim()) return NaN;
+  const t0 = s.replace(/\s/g, '').replace(/\u00a0/g, '');
+  if (/^\d+\.\d{1,2}$/.test(t0)) {
+    return parseFloat(t0);
   }
-  return res;
+  return parsePlPrice(t0);
 }
 
 export async function readCartGrandTotal(page: Page): Promise<number> {
