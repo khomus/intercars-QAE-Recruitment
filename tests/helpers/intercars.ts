@@ -538,57 +538,61 @@ export async function clickFirstUsableListFilter(page: Page): Promise<void> {
 }
 
 /**
- * Klik w „Do koszyka" dla n-tej *unikalnej* oferty (`/produkty/…` po pathname).
- * Po 1. dodaniu n-ta sekwencyjna przycisku na liście ≠ n-ty produkt (przyciski się przesuwają / stan).
+ * Klik w „Do koszyka" — **Playwright** (RPA). `b.click()` w `evaluate` nie wyzwala zdarzeń React, koszyk pusty.
+ * Po n-tej *unikalnej* ofercie: link → w górę po ojcach, pierwsze drzewo z przyciskiem „Do koszyka".
  */
 export async function addToCartByIndex(page: Page, productIndex: number): Promise<void> {
-  const clicked = await page.evaluate((wantIdx: number) => {
-    const main =
-      (document.querySelector('#gc-main-content') as HTMLElement | null) ||
-      (document.querySelector('main') as HTMLElement | null) ||
-      (document.querySelector('[role="main"]') as HTMLElement | null) ||
-      (document.querySelector('body') as HTMLElement | null) ||
-      document.body;
-    const as = main.querySelectorAll<HTMLAnchorElement>('a[href*="/produkty/"]');
-    const seen = new Set<string>();
-    let n = 0;
-    let target: HTMLAnchorElement | null = null;
-    for (const a of as) {
-      let path = '';
-      try {
-        path = new URL(a.getAttribute('href') || a.href, document.baseURI).pathname;
-      } catch {
-        continue;
-      }
-      if (!/produkt/.test(path)) continue;
-      if (seen.has(path)) continue;
-      seen.add(path);
-      if (n === wantIdx) {
-        target = a;
-        break;
-      }
-      n += 1;
-    }
-    if (!target) return false;
-    for (let el: Element | null = target; el && el !== main; el = el.parentElement) {
-      for (const b of (el as HTMLElement).querySelectorAll<HTMLButtonElement>('button')) {
-        const t = b.textContent || b.innerText || '';
-        if (/do\s*koszyka|do\s*kosz/i.test(t) && !/dodan|w\s*kosz/i.test(t)) {
-          b.scrollIntoView({ block: 'center' });
-          b.click();
-          return true;
-        }
-      }
-    }
-    return false;
-  }, productIndex);
-  if (clicked) {
-    await page.waitForLoadState('domcontentloaded');
-    await page.waitForLoadState('networkidle', { timeout: 12_000 }).catch(() => {});
-    return;
-  }
   const main = page.locator('#gc-main-content, [id="gc-main-content"], main, [id="main"], [role="main"]').first();
   const scope = (await main.count().catch(() => 0)) > 0 ? main : page;
+  const idx = await page.evaluate(
+    (want) => {
+      const r = (document.querySelector('#gc-main-content') as HTMLElement | null) || document.body;
+      const as = r.querySelectorAll<HTMLAnchorElement>('a[href*="/produkty/"]');
+      const seen = new Set<string>();
+      let u = 0;
+      for (let i = 0; i < as.length; i++) {
+        const a = as[i]!;
+        let path = '';
+        try {
+          path = new URL(a.getAttribute('href') || a.href, document.baseURI).pathname;
+        } catch {
+          continue;
+        }
+        if (!/produkt/.test(path)) continue;
+        if (seen.has(path)) continue;
+        seen.add(path);
+        if (u === want) {
+          return i;
+        }
+        u += 1;
+      }
+      return -1;
+    },
+    productIndex,
+  );
+  if (idx >= 0) {
+    const link = scope.locator('a[href*="/produkty/"]').nth(idx);
+    await link.scrollIntoViewIfNeeded().catch(() => {});
+    /* Tylko **jeden** „Do koszyka" w tym wierszu; przy `el` = główny węzeł `count>1` kliknęłoby pierwszy w całej ofercie. */
+    for (let up = 1; up <= 9; up += 1) {
+      let tile: Locator = link;
+      for (let d = 0; d < up; d += 1) {
+        tile = tile.locator('xpath=..');
+      }
+      const btn = tile.getByRole('button', { name: /Do\s*koszyka|Dodaj\s+do\s+koszyka/i });
+      const c = await btn.count().catch(() => 0);
+      if (c === 1) {
+        const b0 = btn.first();
+        await b0.scrollIntoViewIfNeeded().catch(() => {});
+        await b0
+          .click({ timeout: 20_000 })
+          .catch(() => b0.click({ force: true, timeout: 15_000 }).catch(() => {}));
+        await page.waitForLoadState('domcontentloaded').catch(() => {});
+        await page.waitForLoadState('networkidle', { timeout: 12_000 }).catch(() => {});
+        return;
+      }
+    }
+  }
   const inList = scope.getByRole('button', { name: /Do koszyka/i });
   if ((await inList.count().catch(() => 0)) > productIndex) {
     const b = inList.nth(productIndex);
