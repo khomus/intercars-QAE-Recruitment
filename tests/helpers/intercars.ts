@@ -273,84 +273,114 @@ export function bodyContainsPlCount(plain: string, n: number): boolean {
   if (s.length <= 3) return false;
   const last3 = s.slice(-3);
   const head = s.slice(0, -3);
-  return new RegExp(`${head}[\s\u00a0\u202f]+${last3}`).test(t);
+  // escape regex metachars w „head" (np. liczby z 1+ wiodącymi zero nie wystąpią w PL ofercie)
+  return new RegExp(
+    String(head).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[\\s\\u00a0\\u202f]+' + String(last3).replace(
+      /[.*+?^${}()|[\]\\]/g,
+      '\\$&',
+    ),
+  ).test(t);
 }
 
 /**
- * Suma/łączna z listingu: „N produktów", „Pokazano 30 z 11 1878", „1–30 z 11 1878", „Pozycje: N", itd.
- * `expectedFromKrok3` — ostatni fallback, gdy liczba z kroku 3 jest w tekście (inny wariant UI).
+ * Suma/łączna z listingu: „N produktów", „1–30 z 11 188", itd. — tylko z wąskiego wycinka DOM.
+ * `expectedFromKrok3` — skrót, gdy liczba w formacie 118 878/118878 występuje tylko w tym wycinku
+ * (bez skanowania wszystkich producentów w filtrach).
  */
 export async function readListingTotalCount(
   page: Page,
   expectedFromKrok3?: number,
 ): Promise<number | null> {
-  const main = page.locator('main, [role="main"], #gc-main-content, [id="gc-main-content"]');
-  let t = (await main.first().innerText().catch(() => '')) || '';
-  if (t.length < 200) t = (await page.locator('body').innerText().catch(() => '')) || t;
-  const u = t;
+  await page.locator('#gc-main-content, [role="main"]').first().waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+  await page.locator('#gc-main-content h1, [role="main"] h1, h1').first().waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
 
-  const pok = u.match(/[Pp]okaz\w*[^0-9]{0,20}(\d[\d\s\u00a0\u202f]+)\s+z\s+(\d[\d\s\u00a0\u202f]+)/);
-  if (pok) {
-    const tot = parsePlInt(pok[2]!);
-    if (Number.isFinite(tot) && tot > 0) return tot;
+  let u = (await page
+    .evaluate(() => {
+      const out: string[] = [];
+      const main = document.querySelector('#gc-main-content, [role="main"]') as HTMLElement | null;
+      if (main) out.push(main.innerText || '');
+      const h1m = main?.querySelector('h1');
+      if (h1m) out.push((h1m as HTMLElement).innerText || '');
+      const br = document.querySelector('.breadcrumb, [class*="breadcrumb" i]') as HTMLElement | null;
+      if (br) out.push(br.innerText || '');
+      for (const sel of [
+        '[class*="list-header" i]',
+        '[class*="search-result" i]',
+        '[class*="paging" i]',
+        '.pagination',
+      ]) {
+        const n = (main && main.querySelector(sel)) || document.querySelector(`#gc-main-content ${sel}`);
+        if (n) out.push((n as HTMLElement).innerText || '');
+      }
+      return out.join(' \n ').slice(0, 32_000);
+    })
+    .catch(() => '')) as string;
+  if (u.length < 80) {
+    await page.waitForTimeout(1200);
+    u = (await page
+      .evaluate(() => {
+        const main = document.querySelector('#gc-main-content, [role="main"]') as HTMLElement | null;
+        return (main && main.innerText) ? String(main.innerText).slice(0, 32_000) : '';
+      })
+      .catch(() => u)) as string;
   }
+  u = (u + '\n' + ((await page.locator('h1').first().innerText().catch(() => '')) || '')).trim();
 
-  const zProd = u.match(
-    /(\d[\d\s\u00a0\u202f]+)\s+z\s+(\d[\d\s\u00a0\u202f]+)\s*(produkt(ów|a|e)?|pozycj|artyk|wynik)/i,
-  );
-  if (zProd) {
-    const hi = Math.max(parsePlInt(zProd[1]!), parsePlInt(zProd[2]!));
-    if (Number.isFinite(hi) && hi > 0) return hi;
-  }
-
-  const rangeZ = u.match(
-    /(\d[\d\s\u00a0\u202f]+)\s*[-–]\s*(\d[\d\s\u00a0\u202f]+)\s+z\s*(\d[\d\s\u00a0\u202f]+)(?:\s*produkt)?/i,
-  );
-  if (rangeZ?.[3]) {
-    const v = parsePlInt(rangeZ[3]);
-    if (Number.isFinite(v) && v > 0) return v;
-  }
-
-  for (const re of [
-    /Wynik(?:i|ó)w?:\s*(\d[\d\s\u00a0\u202f]+)/i,
-    /znalezion[oa]:\s*(\d[\d\s\u00a0\u202f]+)/i,
-    /Pozycj[aei]?(?:[:\-])?\s*(\d[\d\s\u00a0\u202f]+)/i,
-  ]) {
-    const m = u.match(re);
-    if (m?.[1]) {
-      const v = parsePlInt(m[1]);
+  const tryParse = (text: string): number | null => {
+    const s = text.replace(/\s+/g, ' ');
+    const pok = s.match(/[Pp]okaz\w*[^0-9]{0,24}(\d[\d\s\u00a0\u202f]+)\s+z\s+(\d[\d\s\u00a0\u202f]+)/);
+    if (pok) {
+      const tot = parsePlInt(pok[2]!);
+      if (Number.isFinite(tot) && tot > 0) return tot;
+    }
+    const zOnly = s.match(
+      /(\d[\d\s\u00a0\u202f]+)\s*[-–]\s*(\d[\d\s\u00a0\u202f]+)\s+z\s+(\d[\d\s\u00a0\u202f]+)/i,
+    );
+    if (zOnly?.[3]) {
+      const v3 = parsePlInt(zOnly[3]);
+      if (Number.isFinite(v3) && v3 > 0) return v3;
+    }
+    const zProd = s.match(
+      /(\d[\d\s\u00a0\u202f]+)\s+z\s+(\d[\d\s\u00a0\u202f]+)\s*(produkt(ów|a|e)?|pozycj|artyk|wynik)/i,
+    );
+    if (zProd) {
+      const hi = Math.max(parsePlInt(zProd[1]!), parsePlInt(zProd[2]!));
+      if (Number.isFinite(hi) && hi > 0) return hi;
+    }
+    for (const re of [
+      /Wynik(?:i|ó)w?:\s*(\d[\d\s\u00a0\u202f]+)/i,
+      /[Zz]nalezion[oa]\s*[:.]?\s*(\d[\d\s\u00a0\u202f]+)/i,
+      /Pozycj[aei]?(?:[:\-])?\s*(\d[\d\s\u00a0\u202f]+)/i,
+      /[Rr]azem\s*[:.]?\s*(\d[\d\s\u00a0\u202f]+)/i,
+    ]) {
+      const m = s.match(re);
+      if (m?.[1]) {
+        const v = parsePlInt(m[1]);
+        if (Number.isFinite(v) && v > 0) return v;
+      }
+    }
+    const ratio = s.match(/(\d[\d\s\u00a0\u202f]+)\s*\/\s*(\d[\d\s\u00a0\u202f]+)\s*produkt/i);
+    if (ratio?.[2]) {
+      const v = parsePlInt(ratio[2]);
       if (Number.isFinite(v) && v > 0) return v;
     }
-  }
-
-  const ratio = u.match(
-    /(\d[\d\s\u00a0\u202f]+)\s*\/\s*(\d[\d\s\u00a0\u202f]+)\s*produkt/i,
-  );
-  if (ratio?.[2]) {
-    const v = parsePlInt(ratio[2]);
-    if (Number.isFinite(v) && v > 0) return v;
-  }
-
-  let best = 0;
-  for (const m of u.matchAll(/(\d[\d\s\u00a0\u202f]+)\s*produkt(ów|a|e)?/gi)) {
-    const v = parsePlInt(m[1]!);
-    if (Number.isFinite(v) && v > 50 && v < 50_000_000) best = Math.max(best, v);
-  }
-  if (best > 0) return best;
-
-  const headerish = page.locator('h1, [class*="result" i], [class*="listing" i]').first();
-  const ht = (await headerish.innerText().catch(() => '')) ?? '';
-  if (ht) {
-    const p = ht.match(/(\d[\d\s\u00a0\u202f]+)\s*$/);
-    if (p?.[1]) {
-      const v = parsePlInt(p[1]);
-      if (Number.isFinite(v) && v > 0) return v;
+    let best = 0;
+    for (const m of s.matchAll(/(\d[\d\s\u00a0\u202f]+)\s*produkt(ów|a|e)?/gi)) {
+      const v = parsePlInt(m[1]!);
+      if (Number.isFinite(v) && v > 50 && v < 50_000_000) best = Math.max(best, v);
     }
+    if (best > 0) return best;
+    if (expectedFromKrok3 != null && bodyContainsPlCount(s, expectedFromKrok3)) {
+      return expectedFromKrok3;
+    }
+    return null;
+  };
+
+  const r = tryParse(u);
+  if (r == null && process.env.INTERCARS_DEBUG === '1') {
+    console.log('[DEBUG] readListingTotalCount: brak dopasowania, wycinek (max 2k znaków):', u.slice(0, 2000));
   }
-  if (expectedFromKrok3 != null && bodyContainsPlCount(u, expectedFromKrok3)) {
-    return expectedFromKrok3;
-  }
-  return null;
+  return r;
 }
 
 export async function clickFirstUsableListFilter(page: Page): Promise<void> {
