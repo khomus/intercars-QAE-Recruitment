@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import {
   openAllSeeAllCatalog,
-  skipIfBlocked,
+  assertNotBlockedByChallenge,
   listCategoriesWithProductCounts,
   pickLargest,
   getFilterBlockFirst,
@@ -26,7 +26,7 @@ test('intercars: catalog, filter, cart, list vs basket prices', async ({ page })
 
   await test.step('Home: All (WSZYSTKIE) → see all (Zobacz wszystkie)', async () => {
     await openAllSeeAllCatalog(page);
-    await skipIfBlocked(page);
+    await assertNotBlockedByChallenge(page);
   });
 
   let expectedFromCategory: number;
@@ -44,7 +44,7 @@ test('intercars: catalog, filter, cart, list vs basket prices', async ({ page })
     await best.loc.click();
     await page.waitForLoadState('domcontentloaded');
     await page.waitForURL(/oferta\/.+\-\d+/, { timeout: 60000 });
-    await skipIfBlocked(page);
+    await assertNotBlockedByChallenge(page);
   });
 
   await test.step('Listing total vs filter subcategores sum (assignment step)', async () => {

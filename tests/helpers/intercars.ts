@@ -1,5 +1,4 @@
 import type { Page, Locator } from '@playwright/test';
-import { test } from '@playwright/test';
 
 // Helpers for intercars.pl — PL number formats, filters, list vs cart (assignment flow).
 // Site is a mess of divs; locators are defensive on prupose.
@@ -44,11 +43,15 @@ export function isChallengeOrWaitPage(page: Page): Promise<boolean> {
     .then((t) => /cierpliwo|cloudflare|just a moment|attention required|verify you are human/i.test(t));
 }
 
-export async function skipIfBlocked(page: Page): Promise<void> {
+/**
+ * Does not use test.skip — a challenge page makes the test **fail** (visible in CI) instead of “skipped”.
+ * Use headed + manual step if the site shows CAPTCHA (per assignment).
+ */
+export async function assertNotBlockedByChallenge(page: Page): Promise<void> {
   if (await isChallengeOrWaitPage(page)) {
-    test.skip(
-      true,
-      'Wait/challenge page — run headed and finish CAPTCHA: npm run test:headed (see README).',
+    throw new Error(
+      'Challenge or wait page (title matches Cloudflare / Cierpliwości / etc.). ' +
+        'Run: npm run test:headed and complete any check, or retry from a normal browser session.',
     );
   }
 }

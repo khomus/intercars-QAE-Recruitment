@@ -44,4 +44,4 @@ npx playwright show-report
 ## Notes
 
 - Menu labels are Polish (e.g. **WSZYSTKIE** / **Zobacz wszystkie** = *All* / *See all* in the task).
-- Flaky automation is normal on production; if the title looks like a challenge / Cloudflare, the test will `test.skip` and you can retry in headed mode.
+- If the site returns a challenge / wait page, the test **fails** with a clear error (not skipped). Use headed mode to pass CAPTCHA when needed.
