@@ -539,12 +539,13 @@ export async function clickFirstUsableListFilter(page: Page): Promise<void> {
 
 /**
  * Klik w „Do koszyka" — **Playwright** (RPA). `b.click()` w `evaluate` nie wyzwala zdarzeń React, koszyk pusty.
- * Po n-tej *unikalnej* ofercie: link → w górę po ojcach, pierwsze drzewo z przyciskiem „Do koszyka".
+ * Po n-tej *unikalnej* ofercie: link wyznaczany po **slugu** w `href` (ten sam, co w DOM) — `nth(index)` tylko jako zapas, bo przesunięcia listy po 1. dodaniu łatwo łapią w drugim kliku **ten sam** wiersz (1 pozycja w /cart, qty 2).
+ * Fallback: `min(productIndex, count-1)` — gdy 1. produkt już w koszyku, zostaje jeden „Do koszyka" → tylko indeks 0, nie 1.
  */
 export async function addToCartByIndex(page: Page, productIndex: number): Promise<void> {
   const main = page.locator('#gc-main-content, [id="gc-main-content"], main, [id="main"], [role="main"]').first();
   const scope = (await main.count().catch(() => 0)) > 0 ? main : page;
-  const idx = await page.evaluate(
+  const res = await page.evaluate(
     (want) => {
       const r = (document.querySelector('#gc-main-content') as HTMLElement | null) || document.body;
       const as = r.querySelectorAll<HTMLAnchorElement>('a[href*="/produkty/"]');
@@ -562,18 +563,29 @@ export async function addToCartByIndex(page: Page, productIndex: number): Promis
         if (seen.has(path)) continue;
         seen.add(path);
         if (u === want) {
-          return i;
+          const key = path.split('/').filter(Boolean).pop() || '';
+          return { idx: i, key };
         }
         u += 1;
       }
-      return -1;
+      return { idx: -1, key: '' };
     },
     productIndex,
   );
-  if (idx >= 0) {
-    const link = scope.locator('a[href*="/produkty/"]').nth(idx);
+  if (res.idx >= 0) {
+    const nByKey =
+      res.key && !/["\\#]/.test(res.key)
+        ? await scope
+            .locator(`a[href*="/produkty/"][href*="${res.key}"]`)
+            .count()
+            .catch(() => 0)
+        : 0;
+    const link: Locator =
+      nByKey > 0
+        ? scope.locator(`a[href*="/produkty/"][href*="${res.key}"]`).first()
+        : scope.locator('a[href*="/produkty/"]').nth(res.idx);
     await link.scrollIntoViewIfNeeded().catch(() => {});
-    /* Przodek, w którego drzewie jest **dokładnie jeden** link oferty (ten wiersz), potem „Do koszyka".
+    /* Przodek, w którym drzewie jest **dokładnie jeden** link oferty (ten wiersz), potem „Do koszyka".
      * Wymaganie c===1 było zbyt restrykcyjne (0 lub 2+ w płytku). */
     for (let up = 1; up <= 12; up += 1) {
       let tile: Locator = link;
@@ -600,9 +612,10 @@ export async function addToCartByIndex(page: Page, productIndex: number): Promis
     }
   }
   const inList = scope.getByRole('button', { name: /Do koszyka/i });
-  if ((await inList.count().catch(() => 0)) > 0) {
-    /* Po pierwszym dodaniu znika „Do koszyka" przy 1. produkcie — w scope **pierwszy** przycisk to **następna** oferta, nie .nth(1). */
-    const b = inList.nth(0);
+  const nKoszyka = await inList.count().catch(() => 0);
+  if (nKoszyka > 0) {
+    /* gdy 2× „Do koszyka" w DOM, drugi to .nth(1); gdy po 1. dodaniu zostaje jeden — to .nth(0) (kolejna oferta) */
+    const b = inList.nth(Math.min(productIndex, nKoszyka - 1));
     try {
       await b.scrollIntoViewIfNeeded({ timeout: 20_000 });
     } catch {
