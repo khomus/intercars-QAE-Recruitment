@@ -22,23 +22,44 @@ export async function acceptCookiesIfVisible(page: Page): Promise<void> {
 }
 
 /**
- * Newsletter / promo ("Nie przegap najnowszych rabatów…") — blocks filters and PDP.
- * Prefer **NIE**; avoid global `page.locator('a')` for cart before closing this (scroll stuck ~3min in trace).
+ * Newsletter / promo ("Nie przegap… rabatów") — blocks `#gc-main-content` from going :visible in trace.
+ * Click **NIE** inside the promo layer (dialog or a big `div`); never use a page-wide loose `/NIE/i` match.
  */
 export async function dismissIntercarsPromoOrNewsletterIfVisible(page: Page): Promise<void> {
   if (page.isClosed()) return;
-  const nie = page.getByRole('button', { name: /^NIE$/i }).first();
-  if ((await nie.count().catch(() => 0)) > 0 && (await nie.isVisible().catch(() => false))) {
-    await nie.click({ timeout: 5_000, force: true }).catch(() => {});
-  } else if ((await page.getByText(/nie przegap|rabaty i promocji|newsletter/i).count().catch(() => 0)) > 0) {
-    await page
-      .getByRole('button', { name: /NIE/i })
-      .first()
-      .click({ timeout: 5_000, force: true })
-      .catch(() => {});
+  const promoHeading = /nie\s+przegap|najnowszych\s+rabat|rabaty\s+i\s+promocj/i;
+  for (let round = 0; round < 4; round++) {
+    if (page.isClosed()) return;
+    const byRole = page
+      .locator('[role="dialog"], [role="alertdialog"]')
+      .filter({ hasText: promoHeading });
+    const byBlock = page
+      .locator('div,section')
+      .filter({ hasText: promoHeading })
+      .filter({ has: page.getByRole('button', { name: 'NIE', exact: true }) });
+    const shell =
+      (await byRole.count().catch(() => 0)) > 0
+        ? byRole.first()
+        : (await byBlock.count().catch(() => 0)) > 0
+          ? byBlock.first()
+          : null;
+    if (shell === null || !(await shell.isVisible().catch(() => false))) {
+      break;
+    }
+    const nie = shell
+      .getByRole('button', { name: 'NIE', exact: true })
+      .or(shell.getByRole('link', { name: 'NIE', exact: true }))
+      .first();
+    if ((await nie.count().catch(() => 0)) > 0) {
+      await nie.click({ timeout: 6_000, force: true }).catch(() => {});
+    }
+    await page.keyboard.press('Escape').catch(() => {});
+    if (!(await shell.isVisible().catch(() => true))) {
+      break;
+    }
+    await page.waitForTimeout(400).catch(() => {});
   }
-  await page.keyboard.press('Escape').catch(() => {});
-  await page.waitForTimeout(250).catch(() => {});
+  await page.waitForTimeout(200).catch(() => {});
 }
 
 // After "Do koszyka" a modal can block; short timeout or click wait eats the whole test budget.
@@ -320,13 +341,24 @@ export async function readListingTotalCount(
   page: Page,
   expectedFromKrok3?: number,
 ): Promise<number | null> {
-  await page.locator('#gc-main-content, [role="main"]').first().waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
-  await page.locator('#gc-main-content h1, [role="main"] h1, h1').first().waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
+  await dismissIntercarsPromoOrNewsletterIfVisible(page);
+  const mainLoc = page
+    .locator('#gc-main-content, #gcMainContent, [id="gc-main-content"], [role="main"]')
+    .first();
+  await mainLoc.waitFor({ state: 'attached', timeout: 35_000 }).catch(() => {});
+  await mainLoc.waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {});
+  await page
+    .locator('#gc-main-content h1, #gcMainContent h1, [role="main"] h1, h1')
+    .first()
+    .waitFor({ state: 'visible', timeout: 15_000 })
+    .catch(() => {});
 
   let u = (await page
     .evaluate(() => {
       const out: string[] = [];
-      const main = document.querySelector('#gc-main-content, [role="main"]') as HTMLElement | null;
+      const main = (document.querySelector(
+        '#gc-main-content, #gcMainContent, [id="gc-main-content"], [role="main"]',
+      ) as HTMLElement | null);
       if (main) out.push(main.innerText || '');
       const h1m = main?.querySelector('h1');
       if (h1m) out.push((h1m as HTMLElement).innerText || '');
@@ -352,7 +384,9 @@ export async function readListingTotalCount(
     await page.waitForTimeout(1200);
     u = (await page
       .evaluate(() => {
-        const main = document.querySelector('#gc-main-content, [role="main"]') as HTMLElement | null;
+        const main = document.querySelector(
+          '#gc-main-content, #gcMainContent, [id="gc-main-content"], [role="main"]',
+        ) as HTMLElement | null;
         return (main && main.innerText) ? String(main.innerText).slice(0, 32_000) : '';
       })
       .catch(() => u)) as string;
