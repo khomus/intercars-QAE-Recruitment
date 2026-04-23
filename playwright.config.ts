@@ -3,7 +3,8 @@ import { defineConfig, devices } from '@playwright/test';
 // intercars.pl live site — pl-PL matches the shop UI.
 export default defineConfig({
   testDir: './tests',
-  timeout: 120_000,
+  // Live intercars E2E: many steps + 2× product page (dom is slow; do not cap at 2 min)
+  timeout: 300_000,
   expect: { timeout: 25_000 },
   fullyParallel: true,
   forbidOnly: !!process.env.CI,

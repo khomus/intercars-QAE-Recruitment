@@ -457,7 +457,7 @@ export async function clickFirstUsableListFilter(page: Page): Promise<void> {
       .catch(async () => {
         await first.click({ force: true, timeout: 15_000 });
       });
-    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
+    await page.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => {});
     return;
   }
   const labeled = block.locator('label:has(input[type="checkbox"]:not(:disabled))').first();
@@ -472,19 +472,19 @@ export async function clickFirstUsableListFilter(page: Page): Promise<void> {
       .catch(async () => {
         await labeled.click({ force: true, timeout: 15_000 });
       });
-    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
+    await page.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => {});
     return;
   }
   const checkbox = block.locator('input[type="checkbox"]:not(:disabled)').first();
   if ((await checkbox.count()) > 0) {
     await checkbox.click({ force: true, timeout: 20_000 });
-    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
+    await page.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => {});
     return;
   }
   const other = block.getByRole('link', { name: /\(\d/ }).first();
   if ((await other.count().catch(() => 0)) > 0) {
     await other.click();
-    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
+    await page.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => {});
   }
 }
 
@@ -495,11 +495,11 @@ async function addToCartOnProductPage(page: Page, productPath: string): Promise<
     throw new Error(`addToCart: need a /produkty/… path, got: ${productPath}`);
   }
   const target = raw.startsWith('/') ? raw : `/${raw}`;
-  await page.goto(target, { waitUntil: 'load', timeout: 60_000 });
-  await page.waitForLoadState('domcontentloaded');
+  // `load` + `networkidle` are dangerous here: long hangs; SPA keeps requests open → no "idle"
+  await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 45_000 });
   await acceptCookiesIfVisible(page);
   const root = page.locator('#gc-main-content, [id="gc-main-content"], main, [role="main"]').first();
-  await root.waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+  await root.waitFor({ state: 'visible', timeout: 25_000 }).catch(() => {});
   const cta = root
     .getByRole('button', { name: /Dodaj.*koszyka|Do\s*koszyka/i })
     .or(root.getByRole('link', { name: /Dodaj.*koszyka|Do\s*koszyka/i }));
@@ -523,8 +523,7 @@ async function addToCartOnProductPage(page: Page, productPath: string): Promise<
       .click({ timeout: 20_000 })
       .catch(() => b0.click({ force: true, timeout: 15_000 }).catch(() => {}));
   }
-  await page.waitForLoadState('domcontentloaded').catch(() => {});
-  await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
+  await page.waitForLoadState('domcontentloaded', { timeout: 10_000 }).catch(() => {});
 }
 
 /** Same `productPath` as in `readListPricesForFirstProducts` — adds via **PDP** (stable; listing grid was unreliable). */

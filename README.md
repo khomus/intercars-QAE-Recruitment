@@ -36,6 +36,15 @@ HTML report:
 npx playwright show-report
 ```
 
+### Slow runs / timeouts
+
+The suite avoids `networkidle` on intercars (analytics keep the network busy). Default test timeout is **5 minutes**. If something still fails:
+
+```bash
+npx playwright test tests/intercars.assignment.spec.ts --headed --trace on
+npx playwright show-trace test-results/**/trace.zip
+```
+
 ## Layout
 
 - `tests/intercars.assignment.spec.ts` — main flow (All → see all, category, filters, cart assertions).

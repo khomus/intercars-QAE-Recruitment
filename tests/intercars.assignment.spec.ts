@@ -21,7 +21,7 @@ import {
 // Assignment: intercars.pl, All → See all, biggest category, filter sums, one filter, 2 items, price math.
 // CAPTCHA: manual in headed if needed.
 test('intercars: catalog, filter, cart, list vs basket prices', async ({ page }) => {
-  test.setTimeout(180000);
+  test.setTimeout(300_000);
   const savedListPrices: number[] = [];
 
   await test.step('Home: All (WSZYSTKIE) → see all (Zobacz wszystkie)', async () => {
@@ -100,7 +100,7 @@ test('intercars: catalog, filter, cart, list vs basket prices', async ({ page })
     savedListPrices.push(fromList[0]!.price, fromList[1]!.price);
 
     await addToCartByProductPath(page, fromList[0]!.productPath);
-    await page.waitForTimeout(500);
+    // no fixed sleep — avoids "page closed" if the run already hit the global timeout mid-sleep
     await dismissPostAddToCartOverlayIfVisible(page);
     await acceptCookiesIfVisible(page);
     await addToCartByProductPath(page, fromList[1]!.productPath);
@@ -108,8 +108,8 @@ test('intercars: catalog, filter, cart, list vs basket prices', async ({ page })
   });
 
   await test.step('Cart: list prices + grand total (no shipping in compare)', async () => {
-    await page.goto('/cart', { waitUntil: 'load' });
-    await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
+    await page.goto('/cart', { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    await page.getByRole('heading', { name: /koszyk/i }).first().waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
     await acceptCookiesIfVisible(page);
     const body = (await page.locator('body').innerText()).replace(/\s+/g, ' ');
     const empty = /\bkoszyk (jest )?pusty|pusty (twój )?koszy|brak (produkt|pozycji)|the cart (is )?empty\b/i.test(
