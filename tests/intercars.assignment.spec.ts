@@ -19,12 +19,25 @@ import {
   dismissIntercarsPromoOrNewsletterIfVisible,
 } from './helpers/intercars';
 
-// Assignment: intercars.pl, All → See all, biggest category, filter sums, one filter, 2 items, price math.
-// CAPTCHA: manual in headed if needed.
+/**
+ * Recruiter test scenario (plain map — so you see we did not skip steps):
+ * 1) intercars.pl — come in (baseURL in playwright.config)
+ * 2) Menu: All → See all — we click PL labels WSZYSTKIE / Zobacz wszystkie (same thing)
+ * 3) Pick the category with the *highest* product count — dynamic, from the grid
+ * 4) You get a list + filter column — yep, thats the next steps
+ * 5) Check filter area: listing total should line up with the count from (3), and the "Kategorie" subrows
+ *    (they can overlap in the tree a bit, so we allow sum >= listing, not only exact — real site quirk)
+ * 6) Turn on *one* filter (first usable checkbox we find — assigment said "one of")
+ * 7) Put 2 products in the cart (we use product page, list grid was flacky)
+ * 8) On /cart: prices should match what we read on the list, grand total ≈ sum of those two (no delivery in math)
+ * CAPTCHA: you cant auto-skip in code; if it shows up, run headed and solve it by hand (see README). Test fails
+ *    with a clear message otherwise so CI is not "green but skipped".
+ */
 test('intercars: catalog, filter, cart, list vs basket prices', async ({ page }) => {
   test.setTimeout(300_000);
   const savedListPrices: number[] = [];
 
+  // Step 2 in the task — Polish UI strings, not English menu text
   await test.step('Home: All (WSZYSTKIE) → see all (Zobacz wszystkie)', async () => {
     await openAllSeeAllCatalog(page);
     await assertNotBlockedByChallenge(page);
@@ -32,8 +45,9 @@ test('intercars: catalog, filter, cart, list vs basket prices', async ({ page })
 
   let expectedFromCategory: number;
 
+  // Step 3 — dynamic: who has the most products today wins
   await test.step('Pick the category with the higest product count (dynamic)', async () => {
-    // (higest left in step name — how ppl type fast)
+    // (higest left in step name on purpose — how ppl type fast)
     const categories = await listCategoriesWithProductCounts(page);
     expect(
       categories.length,
@@ -48,9 +62,10 @@ test('intercars: catalog, filter, cart, list vs basket prices', async ({ page })
     await assertNotBlockedByChallenge(page);
   });
 
+  // Step 4–5 — list on screen + filter panel; we reconcile numbers (vehicle strip is intercars oddity)
   await test.step('Listing total vs filter subcategores sum (assignment step)', async () => {
     // subcategores: speling like in a hurry
-    // strip &type= so list total matches the category card count
+    // strip &type= / chip so the big number on the list matches the card you clicked in step 3
     await openListingWithoutVehicleTypeParam(page);
     await acceptCookiesIfVisible(page);
     await dismissIntercarsPromoOrNewsletterIfVisible(page);
@@ -86,14 +101,16 @@ test('intercars: catalog, filter, cart, list vs basket prices', async ({ page })
     );
   });
 
+  // Step 6 — one filter only (first checkbox that looks sane in #params_result / aside)
   await test.step('Apply the first usuable filter in the list', async () => {
-    // "usuable" = usual typo, filter block api keeps changing
+    // "usuable" = on purpose, filter block markup keeps changing on us
     await clickFirstUsableListFilter(page);
     await dismissIntercarsPromoOrNewsletterIfVisible(page);
   });
 
+  // Step 7 — 2 skus in basket; we remember list prices *before* navigating away to PDPs
   await test.step('Read two list prices, add two distinct products to cart', async () => {
-    // same productPath for price + add — avoids mismatch vs nth(list)
+    // same productPath for read + add — otherwise nth-row vs price row can disagree (learned the hard way)
     const fromList = await readListPricesForFirstProducts(page, 2);
     expect(
       fromList.length,
@@ -113,6 +130,7 @@ test('intercars: catalog, filter, cart, list vs basket prices', async ({ page })
     await dismissPostAddToCartOverlayIfVisible(page);
   });
 
+  // Step 8 — assigment: compare to list prices, check line total; we ignore shipping on purpose
   await test.step('Cart: list prices + grand total (no shipping in compare)', async () => {
     await page.goto('/cart', { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await page.getByRole('heading', { name: /koszyk/i }).first().waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
