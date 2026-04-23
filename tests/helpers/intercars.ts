@@ -537,16 +537,188 @@ export async function clickFirstUsableListFilter(page: Page): Promise<void> {
   }
 }
 
+function intercarsNormPath(p: string): string {
+  const noQ = p.split('?')[0] ?? p;
+  try {
+    return decodeURIComponent(noQ.replace(/\/$/, '')).toLowerCase();
+  } catch {
+    return noQ.replace(/\/$/, '').toLowerCase();
+  }
+}
+
+/** Kafel: jeden `a[/produkty/]` w poddrzewie, przycisk **Do/Dodaj** koszyk. */
+async function tryClickAddInProductTile(page: Page, link: Locator): Promise<boolean> {
+  await link.scrollIntoViewIfNeeded().catch(() => {});
+  for (let up = 1; up <= 12; up += 1) {
+    let tile: Locator = link;
+    for (let d = 0; d < up; d += 1) {
+      tile = tile.locator('xpath=..');
+    }
+    const nLinks = await tile.locator('a[href*="/produkty/"]').count().catch(() => 0);
+    if (nLinks !== 1) {
+      continue;
+    }
+    const btn = tile.getByRole('button', { name: /Do\s*koszyka|Dodaj\s+do\s+koszyka/i });
+    if ((await btn.count().catch(() => 0)) < 1) {
+      continue;
+    }
+    const b0 = btn.first();
+    await b0.scrollIntoViewIfNeeded().catch(() => {});
+    await b0
+      .click({ timeout: 20_000 })
+      .catch(() => b0.click({ force: true, timeout: 15_000 }).catch(() => {}));
+    await page.waitForLoadState('domcontentloaded').catch(() => {});
+    await page.waitForLoadState('networkidle', { timeout: 12_000 }).catch(() => {});
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Wiersz: pierwszy przycisk „do koszyka" w pionowym łańcuchu **przodków** linku (gdy w kafle nie wykryto nLinks=1).
+ */
+async function tryClickAddWalkingAncestorsOfLink(page: Page, link: Locator): Promise<boolean> {
+  let cur: Locator = link;
+  for (let d = 0; d < 18; d++) {
+    const b = cur.getByRole('button', { name: /Do\s*koszyka|Dodaj\s*do\s*koszyka/i });
+    if ((await b.count().catch(() => 0)) > 0) {
+      const b0 = b.first();
+      await b0.scrollIntoViewIfNeeded().catch(() => {});
+      await b0
+        .click({ timeout: 20_000 })
+        .catch(() => b0.click({ force: true, timeout: 15_000 }).catch(() => {}));
+      await page.waitForLoadState('domcontentloaded').catch(() => {});
+      await page.waitForLoadState('networkidle', { timeout: 12_000 }).catch(() => {});
+      return true;
+    }
+    cur = cur.locator('xpath=..');
+  }
+  return false;
+}
+
+/**
+ * Te same oferty, co ceny w `readListPricesForFirstProducts` (`productPath` z pathname) — inaczej drugi
+ * krok w DOM to **inna** pozycja (np. gdy 2. unikalne `/produkty/…` w treści **nie miało** ceny w drzewie),
+ * a koszyk: jedna linia, qty 1, „Koszyk 1" w nagłówku.
+ */
+export async function addToCartByProductPath(page: Page, productPath: string): Promise<void> {
+  const main = page.locator('#gc-main-content, [id="gc-main-content"], main, [id="main"], [role="main"]').first();
+  const scope = (await main.count().catch(() => 0)) > 0 ? main : page;
+  const want = intercarsNormPath(productPath);
+  const { key, idx } = await page.evaluate((pathNorm) => {
+    const r = (document.querySelector('#gc-main-content') as HTMLElement | null) || document.body;
+    const as = r.querySelectorAll<HTMLAnchorElement>('a[href*="/produkty/"]');
+    for (let i = 0; i < as.length; i++) {
+      const a = as[i]!;
+      let p = '';
+      try {
+        p = new URL(a.getAttribute('href') || a.href, document.baseURI).pathname;
+      } catch {
+        const h = a.getAttribute('href') || '';
+        if (!/produkt/.test(h)) continue;
+        p = h;
+      }
+      p = p.split('?')[0]!.replace(/\/$/, '');
+      try {
+        p = decodeURIComponent(p).toLowerCase();
+      } catch {
+        p = p.toLowerCase();
+      }
+      if (p === pathNorm) {
+        const seg = pathNorm.split('/').filter(Boolean).pop() || '';
+        return { key: seg, idx: i };
+      }
+    }
+    return { key: '', idx: -1 };
+  }, want);
+  if (key && !/["\\#]/.test(key)) {
+    const byKey = scope.locator(`a[href*="/produkty/"][href*="${key}"]`);
+    if ((await byKey.count().catch(() => 0)) > 0) {
+      const link = byKey.first();
+      if (await tryClickAddInProductTile(page, link)) {
+        return;
+      }
+      if (await tryClickAddWalkingAncestorsOfLink(page, link)) {
+        return;
+      }
+    }
+  }
+  if (idx >= 0) {
+    const link = scope.locator('a[href*="/produkty/"]').nth(idx);
+    if (await tryClickAddInProductTile(page, link)) {
+      return;
+    }
+    if (await tryClickAddWalkingAncestorsOfLink(page, link)) {
+      return;
+    }
+  }
+  const uOrder = await page.evaluate((pathNorm) => {
+    const r = (document.querySelector('#gc-main-content') as HTMLElement | null) || document.body;
+    const as = r.querySelectorAll<HTMLAnchorElement>('a[href*="/produkty/"]');
+    const seen = new Set<string>();
+    let order = 0;
+    for (let i = 0; i < as.length; i++) {
+      const a = as[i]!;
+      let p = '';
+      try {
+        p = new URL(a.getAttribute('href') || a.href, document.baseURI).pathname;
+      } catch {
+        const h = a.getAttribute('href') || '';
+        if (!/produkt/.test(h)) continue;
+        p = h;
+      }
+      p = p.split('?')[0]!.replace(/\/$/, '');
+      try {
+        p = decodeURIComponent(p).toLowerCase();
+      } catch {
+        p = p.toLowerCase();
+      }
+      if (seen.has(p)) continue;
+      seen.add(p);
+      if (p === pathNorm) {
+        return order;
+      }
+      order += 1;
+    }
+    return -1;
+  }, want);
+  if (uOrder >= 0) {
+    let cards = page
+      .locator('[class*="product" i], [data-product], a[href*="/produkty/"], article, [class*="tile" i]')
+      .filter({ hasText: /Dodaj|Koszy|zł|Do koszyka/i });
+    if ((await cards.count().catch(() => 0)) === 0) {
+      cards = page.getByRole('listitem').filter({ hasText: /zł|Do koszyka/i });
+    }
+    if ((await cards.count().catch(() => 0)) === 0) {
+      cards = page.getByRole('listitem');
+    }
+    if ((await cards.count().catch(() => 0)) > uOrder) {
+      const card = cards.nth(uOrder);
+      const add = card
+        .getByRole('button', { name: /Dodaj|Do koszyka|Koszy|kupuj/i })
+        .or(card.locator('a[href*="basket" i], a[href*="cart" i]'))
+        .first();
+      await add.scrollIntoViewIfNeeded().catch(() => {});
+      await add.click({ force: true, timeout: 20_000 }).catch(() => {});
+      return;
+    }
+    const btn = page
+      .getByRole('button', { name: /Dodaj do koszyka|Dodaj|Do koszyka|Koszy/i })
+      .nth(uOrder);
+    await btn.scrollIntoViewIfNeeded().catch(() => {});
+    await btn.click({ force: true, timeout: 20_000 }).catch(() => {});
+  }
+}
+
 /**
  * Klik w „Do koszyka" — **Playwright** (RPA). `b.click()` w `evaluate` nie wyzwala zdarzeń React, koszyk pusty.
- * Po n-tej *unikalnej* ofercie: link wyznaczany po **slugu** w `href` (ten sam, co w DOM) — `nth(index)` tylko jako zapas, bo przesunięcia listy po 1. dodaniu łatwo łapią w drugim kliku **ten sam** wiersz (1 pozycja w /cart, qty 2).
- * Fallback: `min(productIndex, count-1)` — gdy 1. produkt już w koszyku, zostaje jeden „Do koszyka" → tylko indeks 0, nie 1.
+ * Preferuj `addToCartByProductPath` w parze z cenami z listy (wspólna kolejność ofert).
  */
 export async function addToCartByIndex(page: Page, productIndex: number): Promise<void> {
   const main = page.locator('#gc-main-content, [id="gc-main-content"], main, [id="main"], [role="main"]').first();
   const scope = (await main.count().catch(() => 0)) > 0 ? main : page;
   const res = await page.evaluate(
-    (want) => {
+    (w) => {
       const r = (document.querySelector('#gc-main-content') as HTMLElement | null) || document.body;
       const as = r.querySelectorAll<HTMLAnchorElement>('a[href*="/produkty/"]');
       const seen = new Set<string>();
@@ -562,7 +734,7 @@ export async function addToCartByIndex(page: Page, productIndex: number): Promis
         if (!/produkt/.test(path)) continue;
         if (seen.has(path)) continue;
         seen.add(path);
-        if (u === want) {
+        if (u === w) {
           const key = path.split('/').filter(Boolean).pop() || '';
           return { idx: i, key };
         }
@@ -584,37 +756,16 @@ export async function addToCartByIndex(page: Page, productIndex: number): Promis
       nByKey > 0
         ? scope.locator(`a[href*="/produkty/"][href*="${res.key}"]`).first()
         : scope.locator('a[href*="/produkty/"]').nth(res.idx);
-    await link.scrollIntoViewIfNeeded().catch(() => {});
-    /* Przodek, w którym drzewie jest **dokładnie jeden** link oferty (ten wiersz), potem „Do koszyka".
-     * Wymaganie c===1 było zbyt restrykcyjne (0 lub 2+ w płytku). */
-    for (let up = 1; up <= 12; up += 1) {
-      let tile: Locator = link;
-      for (let d = 0; d < up; d += 1) {
-        tile = tile.locator('xpath=..');
-      }
-      const nLinks = await tile.locator('a[href*="/produkty/"]').count().catch(() => 0);
-      if (nLinks !== 1) {
-        continue;
-      }
-      const btn = tile.getByRole('button', { name: /Do\s*koszyka|Dodaj\s+do\s+koszyka/i });
-      const c = await btn.count().catch(() => 0);
-      if (c < 1) {
-        continue;
-      }
-      const b0 = btn.first();
-      await b0.scrollIntoViewIfNeeded().catch(() => {});
-      await b0
-        .click({ timeout: 20_000 })
-        .catch(() => b0.click({ force: true, timeout: 15_000 }).catch(() => {}));
-      await page.waitForLoadState('domcontentloaded').catch(() => {});
-      await page.waitForLoadState('networkidle', { timeout: 12_000 }).catch(() => {});
+    if (await tryClickAddInProductTile(page, link)) {
+      return;
+    }
+    if (await tryClickAddWalkingAncestorsOfLink(page, link)) {
       return;
     }
   }
-  const inList = scope.getByRole('button', { name: /Do koszyka/i });
+  const inList = scope.getByRole('button', { name: /Do koszyka|Dodaj do koszyka/i });
   const nKoszyka = await inList.count().catch(() => 0);
   if (nKoszyka > 0) {
-    /* gdy 2× „Do koszyka" w DOM, drugi to .nth(1); gdy po 1. dodaniu zostaje jeden — to .nth(0) (kolejna oferta) */
     const b = inList.nth(Math.min(productIndex, nKoszyka - 1));
     try {
       await b.scrollIntoViewIfNeeded({ timeout: 20_000 });
@@ -653,13 +804,14 @@ export async function addToCartByIndex(page: Page, productIndex: number): Promis
 /**
  * Ceny w liście B2C: kafel to często `div` (nie `article`), link `/produkty/…` i „8,08” / „8.08” + `zł`
  * w poddrzewie; wzorzec tylko z przecinkiem łamał wykrywanie, a selektor tylko po `product`/`article` miał 0 wyników.
+ * `productPath` = pathname oferty (do `addToCartByProductPath`) — ta sama kolejność co ceny, nie `nth` po indeksie w DOM.
  */
 export async function readListPricesForFirstProducts(
   page: Page,
   take: number,
-): Promise<{ title: string; price: number }[]> {
+): Promise<{ title: string; price: number; productPath: string }[]> {
   const raw = await page.evaluate((taken: number) => {
-    const res: { title: string; priceStr: string }[] = [];
+    const res: { title: string; priceStr: string; productPath: string }[] = [];
     const main: HTMLElement | null =
       (document.querySelector('#gc-main-content') as HTMLElement | null) ||
       (document.querySelector('#gcMainContent') as HTMLElement | null) ||
@@ -683,6 +835,20 @@ export async function readListPricesForFirstProducts(
     }
     for (const a of byPath.values()) {
       if (res.length >= taken) break;
+      let productPath = '';
+      try {
+        productPath = new URL(a.getAttribute('href') || a.href, document.baseURI).pathname;
+      } catch {
+        const h = a.getAttribute('href') || '';
+        if (!/produkt/.test(h)) {
+          productPath = '';
+        } else {
+          productPath = h.split('?')[0] ?? h;
+        }
+      }
+      if (productPath && !/produkt/.test(productPath)) {
+        productPath = '';
+      }
       let el: Element | null = a;
       for (let d = 0; d < 25 && el; d++) {
         const full = (el as HTMLElement).innerText.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ');
@@ -703,7 +869,7 @@ export async function readListPricesForFirstProducts(
         const priceStr = m[1]!.replace(/\s+/g, '').replace(/\u00a0/g, '').replace(/\u202f/g, '');
         const tEl = el.querySelector<HTMLElement>('h2 a, h2, h1 a, h3 a') || (a as HTMLElement);
         const title = (tEl.textContent || a.textContent || '').replace(/\s+/g, ' ').trim() || pre.slice(0, 100);
-        res.push({ title, priceStr });
+        res.push({ title, priceStr, productPath });
         break;
       }
     }
@@ -712,9 +878,19 @@ export async function readListPricesForFirstProducts(
   return raw
     .map((r) => {
       const price = parsePlPriceForListing(r.priceStr);
-      return { title: r.title.trim(), price } as { title: string; price: number };
+      return {
+        title: r.title.trim(),
+        price,
+        productPath: r.productPath || '',
+      } as { title: string; price: number; productPath: string };
     })
-    .filter((r) => Number.isFinite(r.price) && r.price > 0);
+    .filter(
+      (r) =>
+        Number.isFinite(r.price) &&
+        r.price > 0 &&
+        r.productPath.length > 0 &&
+        /produkt/i.test(r.productPath),
+    );
 }
 
 function parsePlPriceForListing(s: string): number {

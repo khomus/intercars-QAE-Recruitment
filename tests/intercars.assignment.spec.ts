@@ -10,7 +10,7 @@ import {
   sumFilterRowCounts,
   readListingTotalCount,
   clickFirstUsableListFilter,
-  addToCartByIndex,
+  addToCartByProductPath,
   readListPricesForFirstProducts,
   readCartGrandTotal,
   acceptCookiesIfVisible,
@@ -105,11 +105,11 @@ test('Intercars: каталог, фильтр, корзина, цены', async 
     savedListPrices.length = 0;
     savedListPrices.push(fromList[0]!.price, fromList[1]!.price);
 
-    await addToCartByIndex(page, 0);
+    await addToCartByProductPath(page, fromList[0]!.productPath);
     await page.waitForTimeout(500);
     await dismissPostAddToCartOverlayIfVisible(page);
     await acceptCookiesIfVisible(page);
-    await addToCartByIndex(page, 1);
+    await addToCartByProductPath(page, fromList[1]!.productPath);
     await dismissPostAddToCartOverlayIfVisible(page);
   });
 
