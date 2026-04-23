@@ -16,6 +16,7 @@ import {
   acceptCookiesIfVisible,
   cartPageContainsListPrice,
   dismissPostAddToCartOverlayIfVisible,
+  dismissIntercarsPromoOrNewsletterIfVisible,
 } from './helpers/intercars';
 
 // Assignment: intercars.pl, All → See all, biggest category, filter sums, one filter, 2 items, price math.
@@ -52,6 +53,7 @@ test('intercars: catalog, filter, cart, list vs basket prices', async ({ page })
     // strip &type= so list total matches the category card count
     await openListingWithoutVehicleTypeParam(page);
     await acceptCookiesIfVisible(page);
+    await dismissIntercarsPromoOrNewsletterIfVisible(page);
 
     const listingTotal = await readListingTotalCount(page, expectedFromCategory);
     expect(listingTotal, 'Could not read product total from listing header/area').not.toBeNull();
@@ -87,6 +89,7 @@ test('intercars: catalog, filter, cart, list vs basket prices', async ({ page })
   await test.step('Apply the first usuable filter in the list', async () => {
     // "usuable" = usual typo, filter block api keeps changing
     await clickFirstUsableListFilter(page);
+    await dismissIntercarsPromoOrNewsletterIfVisible(page);
   });
 
   await test.step('Read two list prices, add two distinct products to cart', async () => {

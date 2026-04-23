@@ -21,6 +21,26 @@ export async function acceptCookiesIfVisible(page: Page): Promise<void> {
   await btn.click({ timeout: 12000 }).catch(() => {});
 }
 
+/**
+ * Newsletter / promo ("Nie przegap najnowszych rabatów…") — blocks filters and PDP.
+ * Prefer **NIE**; avoid global `page.locator('a')` for cart before closing this (scroll stuck ~3min in trace).
+ */
+export async function dismissIntercarsPromoOrNewsletterIfVisible(page: Page): Promise<void> {
+  if (page.isClosed()) return;
+  const nie = page.getByRole('button', { name: /^NIE$/i }).first();
+  if ((await nie.count().catch(() => 0)) > 0 && (await nie.isVisible().catch(() => false))) {
+    await nie.click({ timeout: 5_000, force: true }).catch(() => {});
+  } else if ((await page.getByText(/nie przegap|rabaty i promocji|newsletter/i).count().catch(() => 0)) > 0) {
+    await page
+      .getByRole('button', { name: /NIE/i })
+      .first()
+      .click({ timeout: 5_000, force: true })
+      .catch(() => {});
+  }
+  await page.keyboard.press('Escape').catch(() => {});
+  await page.waitForTimeout(250).catch(() => {});
+}
+
 // After "Do koszyka" a modal can block; short timeout or click wait eats the whole test budget.
 export async function dismissPostAddToCartOverlayIfVisible(page: Page): Promise<void> {
   if (page.isClosed()) return;
@@ -498,30 +518,31 @@ async function addToCartOnProductPage(page: Page, productPath: string): Promise<
   // `load` + `networkidle` are dangerous here: long hangs; SPA keeps requests open → no "idle"
   await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 45_000 });
   await acceptCookiesIfVisible(page);
+  await dismissIntercarsPromoOrNewsletterIfVisible(page);
   const root = page.locator('#gc-main-content, [id="gc-main-content"], main, [role="main"]').first();
   await root.waitFor({ state: 'visible', timeout: 25_000 }).catch(() => {});
+  await dismissIntercarsPromoOrNewsletterIfVisible(page);
   const cta = root
     .getByRole('button', { name: /Dodaj.*koszyka|Do\s*koszyka/i })
     .or(root.getByRole('link', { name: /Dodaj.*koszyka|Do\s*koszyka/i }));
   if ((await cta.count().catch(() => 0)) === 0) {
-    const fallback = page
+    // must stay under `root` — page-wide `a, button` can pick a node behind a dialog → multi-minute scroll
+    const fallback = root
       .locator('a, button')
       .filter({ hasText: /Dodaj\s+do\s+koszyka|Dodaj\s*do\s*koszyka|Do\s*koszyka/i })
       .first();
     if ((await fallback.count().catch(() => 0)) > 0) {
-      await fallback.scrollIntoViewIfNeeded().catch(() => {});
       await fallback
-        .click({ timeout: 20_000 })
-        .catch(() => fallback.click({ force: true, timeout: 15_000 }).catch(() => {}));
+        .click({ force: true, timeout: 15_000 })
+        .catch(() => fallback.click({ force: true, timeout: 10_000 }).catch(() => {}));
     } else {
       throw new Error(`addToCart: no add-to-basket control on ${target}`);
     }
   } else {
     const b0 = cta.first();
-    await b0.scrollIntoViewIfNeeded().catch(() => {});
     await b0
-      .click({ timeout: 20_000 })
-      .catch(() => b0.click({ force: true, timeout: 15_000 }).catch(() => {}));
+      .click({ force: true, timeout: 20_000 })
+      .catch(() => b0.click({ force: true, timeout: 12_000 }).catch(() => {}));
   }
   await page.waitForLoadState('domcontentloaded', { timeout: 10_000 }).catch(() => {});
 }
