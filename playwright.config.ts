@@ -15,7 +15,8 @@ export default defineConfig({
   use: {
     baseURL: 'https://intercars.pl',
     locale: 'pl-PL',
-    trace: 'on-first-retry',
+    trace: 'on',
+    video: 'on',
   },
   projects: [
     {
