@@ -24,11 +24,36 @@ export async function acceptCookiesIfVisible(page: Page): Promise<void> {
 /** SalesManago web push — `wpc_w` markup, no `role="dialog"`, often in an **iframe** (separate document). */
 async function dismissSalesmanagoWebPushInContext(ctx: Page | Frame): Promise<void> {
   const nie = ctx
-    .locator('button.wpc_w_f_c_b-n, .wpc_w_f_c button.wpc_w_f_c_b-n')
+    .locator('button.wpc_w_f_c_b-n, [class*="wpc_w_f_c_b-n"]')
     .or(ctx.locator('.wpc_w_f, .wpc_w').getByRole('button', { name: 'NIE', exact: true }))
     .first();
-  if ((await nie.count().catch(() => 0)) > 0 && (await nie.isVisible().catch(() => false))) {
+  if ((await nie.count().catch(() => 0)) > 0) {
     await nie.click({ timeout: 5_000, force: true }).catch(() => {});
+  }
+  // Still open? — e.g. zero opacity so `isVisible` was false; use DOM click.
+  const clicked = await ctx
+    .evaluate(() => {
+      const b = document.querySelector('button.wpc_w_f_c_b-n, button[class*="wpc_w_f_c_b-n"]') as
+        | HTMLButtonElement
+        | null;
+      if (b) {
+        b.click();
+        return true;
+      }
+      return false;
+    })
+    .catch(() => false);
+  if (clicked) {
+    return;
+  }
+  const t = (await ctx.locator('.wpc_w_f, .wpc_w, .wpc-body').textContent().catch(() => '')) || '';
+  if (/\bNIE\b|przegap.*rabat/i.test(t) && (await ctx.locator('button').count()) > 0) {
+    await ctx
+      .locator('button')
+      .filter({ hasText: /^NIE$/ })
+      .first()
+      .click({ force: true, timeout: 3_000 })
+      .catch(() => {});
   }
 }
 
@@ -578,17 +603,28 @@ async function addToCartOnProductPage(page: Page, productPath: string): Promise<
   // SalesManago injects an iframe async — give it a beat before `dismiss` walks `page.frames()`.
   await page.waitForTimeout(600).catch(() => {});
   await dismissIntercarsPromoOrNewsletterIfVisible(page);
-  const root = page.locator('#gc-main-content, [id="gc-main-content"], main, [role="main"]').first();
+  // `first()` on `#gc-main-content, main, [role=main]` can hit an empty/placeholder node — then CTA is "missing".
+  const pdpName = /Dodaj\s+do\s+koszyka|Dodaj\s*do\s*koszyka|Do\s*koszyka/i;
+  const root = page
+    .getByRole('main')
+    .filter({ has: page.getByRole('heading', { level: 1 }) })
+    .or(page.locator('#gc-main-content, #gcMainContent, [id="gc-main-content"]'))
+    .first();
+  await page.getByRole('heading', { level: 1 }).first().waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
   await root.waitFor({ state: 'visible', timeout: 25_000 }).catch(() => {});
   await dismissIntercarsPromoOrNewsletterIfVisible(page);
   const cta = root
-    .getByRole('button', { name: /Dodaj.*koszyka|Do\s*koszyka/i })
-    .or(root.getByRole('link', { name: /Dodaj.*koszyka|Do\s*koszyka/i }));
+    .getByRole('button', { name: pdpName })
+    .or(root.getByRole('link', { name: pdpName }))
+    .or(page.getByRole('button', { name: pdpName }))
+    .or(page.getByRole('link', { name: pdpName }));
   if ((await cta.count().catch(() => 0)) === 0) {
-    // must stay under `root` — page-wide `a, button` can pick a node behind a dialog → multi-minute scroll
-    const fallback = root
+    const fallback = page
+      .getByRole('main')
+      .or(page.locator('#gc-main-content, #gcMainContent'))
+      .first()
       .locator('a, button')
-      .filter({ hasText: /Dodaj\s+do\s+koszyka|Dodaj\s*do\s*koszyka|Do\s*koszyka/i })
+      .filter({ hasText: pdpName })
       .first();
     if ((await fallback.count().catch(() => 0)) > 0) {
       await fallback
@@ -598,11 +634,16 @@ async function addToCartOnProductPage(page: Page, productPath: string): Promise<
       await dismissIntercarsPromoOrNewsletterIfVisible(page);
       await page.waitForTimeout(500).catch(() => {});
       const cta2 = root
-        .getByRole('button', { name: /Dodaj.*koszyka|Do\s*koszyka/i })
-        .or(root.getByRole('link', { name: /Dodaj.*koszyka|Do\s*koszyka/i }));
-      const fb2 = root
+        .getByRole('button', { name: pdpName })
+        .or(root.getByRole('link', { name: pdpName }))
+        .or(page.getByRole('button', { name: pdpName }))
+        .or(page.getByRole('link', { name: pdpName }));
+      const fb2 = page
+        .getByRole('main')
+        .or(page.locator('#gc-main-content, #gcMainContent'))
+        .first()
         .locator('a, button')
-        .filter({ hasText: /Dodaj\s+do\s+koszyka|Dodaj\s*do\s*koszyka|Do\s*koszyka/i })
+        .filter({ hasText: pdpName })
         .first();
       if ((await cta2.count().catch(() => 0)) > 0) {
         const b = cta2.first();
