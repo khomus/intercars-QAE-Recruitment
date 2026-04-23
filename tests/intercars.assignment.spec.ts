@@ -125,9 +125,10 @@ test('Intercars: каталог, фильтр, корзина, цены', async 
       pusty,
       'Koszyk: brak pozycji („jest pusty”) — ceny z listy nie wystąpią; w poprzednim kroku 2× „Do koszyka” musi zapisać sesję, bez przeładowania, które czyści wózek.',
     ).toBeFalsy();
+    /* /cart: nie zawsze jest #gc-main-content; wiersze czasem role=row (div), nie <tr> — stąd 0. */
     const nPozycji = await page
       .locator(
-        '#gc-main-content tr a[href*="/produkty/"], #gc-main-content tbody a[href*="/produkty/"], main tr a[href*="/produkty/"]',
+        'table a[href*="/produkty/"], [role="row"] a[href*="/produkty/"], #gc-main-content a[href*="/produkty/"], main a[href*="/produkty/"]',
       )
       .count();
     expect(
