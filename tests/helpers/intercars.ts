@@ -22,16 +22,9 @@ export async function acceptCookiesIfVisible(page: Page): Promise<void> {
 }
 
 /** SalesManago web push — `wpc_w` markup, no `role="dialog"`, often in an **iframe** (separate document). */
-async function dismissSalesmanagoWebPushInContext(ctx: Page | Frame): Promise<void> {
-  const nie = ctx
-    .locator('button.wpc_w_f_c_b-n, [class*="wpc_w_f_c_b-n"]')
-    .or(ctx.locator('.wpc_w_f, .wpc_w').getByRole('button', { name: 'NIE', exact: true }))
-    .first();
-  if ((await nie.count().catch(() => 0)) > 0) {
-    await nie.click({ timeout: 5_000, force: true }).catch(() => {});
-  }
-  // Still open? — e.g. zero opacity so `isVisible` was false; use DOM click.
-  const clicked = await ctx
+async function dismissSalesmanagoWebPushInContext(fr: Frame): Promise<void> {
+  if (fr.isDetached()) return;
+  const clicked = await fr
     .evaluate(() => {
       const b = document.querySelector('button.wpc_w_f_c_b-n, button[class*="wpc_w_f_c_b-n"]') as
         | HTMLButtonElement
@@ -46,19 +39,22 @@ async function dismissSalesmanagoWebPushInContext(ctx: Page | Frame): Promise<vo
   if (clicked) {
     return;
   }
-  const t = (await ctx.locator('.wpc_w_f, .wpc_w, .wpc-body').textContent().catch(() => '')) || '';
-  if (/\bNIE\b|przegap.*rabat/i.test(t) && (await ctx.locator('button').count()) > 0) {
-    await ctx
-      .locator('button')
-      .filter({ hasText: /^NIE$/ })
-      .first()
-      .click({ force: true, timeout: 3_000 })
-      .catch(() => {});
+  const nie = fr
+    .locator('button.wpc_w_f_c_b-n, [class*="wpc_w_f_c_b-n"]')
+    .or(fr.locator('.wpc_w_f, .wpc_w').getByRole('button', { name: 'NIE', exact: true }))
+    .first();
+  if ((await nie.count().catch(() => 0)) > 0) {
+    await nie.click({ timeout: 3_000, force: true }).catch(() => {});
   }
 }
 
 async function dismissSalesmanagoWebPushEverywhere(page: Page): Promise<void> {
+  if (page.isClosed()) return;
+  let n = 0;
   for (const fr of page.frames()) {
+    if (++n > 24) break;
+    if (fr.isDetached()) continue;
+    if (fr.url() === 'about:blank') continue;
     await dismissSalesmanagoWebPushInContext(fr);
   }
 }
@@ -72,25 +68,21 @@ export async function dismissIntercarsPromoOrNewsletterIfVisible(page: Page): Pr
   if (page.isClosed()) return;
   for (let sm = 0; sm < 2; sm++) {
     await dismissSalesmanagoWebPushEverywhere(page);
-    await page.waitForTimeout(200).catch(() => {});
+    if (page.isClosed()) return;
+    await page.waitForTimeout(150).catch(() => {});
   }
+  // NEVER use `locator('div,section').filter({ hasText: … })` + count — on big PLPs it can run **minutes**.
   const promoHeading = /nie\s+przegap|najnowszych\s+rabat|rabaty\s+i\s+promocj/i;
-  for (let round = 0; round < 4; round++) {
+  for (let round = 0; round < 3; round++) {
     if (page.isClosed()) return;
     const byRole = page
       .locator('[role="dialog"], [role="alertdialog"]')
       .filter({ hasText: promoHeading });
-    const byBlock = page
-      .locator('div,section')
-      .filter({ hasText: promoHeading })
-      .filter({ has: page.getByRole('button', { name: 'NIE', exact: true }) });
-    const shell =
-      (await byRole.count().catch(() => 0)) > 0
-        ? byRole.first()
-        : (await byBlock.count().catch(() => 0)) > 0
-          ? byBlock.first()
-          : null;
-    if (shell === null || !(await shell.isVisible().catch(() => false))) {
+    if ((await byRole.count().catch(() => 0)) === 0) {
+      break;
+    }
+    const shell = byRole.first();
+    if (!(await shell.isVisible().catch(() => false))) {
       break;
     }
     const nie = shell
@@ -98,16 +90,26 @@ export async function dismissIntercarsPromoOrNewsletterIfVisible(page: Page): Pr
       .or(shell.getByRole('link', { name: 'NIE', exact: true }))
       .first();
     if ((await nie.count().catch(() => 0)) > 0) {
-      await nie.click({ timeout: 6_000, force: true }).catch(() => {});
+      await nie.click({ timeout: 4_000, force: true }).catch(() => {});
     }
     await page.keyboard.press('Escape').catch(() => {});
     if (!(await shell.isVisible().catch(() => true))) {
       break;
     }
-    await page.waitForTimeout(400).catch(() => {});
+    await page.waitForTimeout(250).catch(() => {});
   }
+  if (page.isClosed()) return;
+  const wpcHit = page.getByText(promoHeading, { exact: false }).first();
+  if ((await wpcHit.count().catch(() => 0)) > 0 && (await wpcHit.isVisible().catch(() => false))) {
+    await wpcHit
+      .locator('xpath=ancestor::div[contains(@class,"wpc_w")][1]')
+      .getByRole('button', { name: 'NIE', exact: true })
+      .click({ force: true, timeout: 3_000 })
+      .catch(() => {});
+  }
+  if (page.isClosed()) return;
   await dismissSalesmanagoWebPushEverywhere(page);
-  await page.waitForTimeout(200).catch(() => {});
+  await page.waitForTimeout(100).catch(() => {});
 }
 
 // After "Do koszyka" a modal can block; short timeout or click wait eats the whole test budget.
@@ -183,7 +185,7 @@ export async function tryDismissSelectedVehicleInFilters(page: Page): Promise<vo
   await closeBtn.scrollIntoViewIfNeeded();
   await closeBtn.click({ timeout: 10_000, force: true }).catch(() => {});
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForTimeout(1200);
+  await page.waitForTimeout(400).catch(() => {});
 }
 
 // URL-only cleanup + chip dismiss; do NOT "clear all" — that goes back to /oferta/ root and breaks counts.
@@ -191,16 +193,14 @@ export async function openListingWithoutVehicleTypeParam(page: Page): Promise<vo
   for (let i = 0; i < 2; i++) {
     let next = buildUrlStripVehicleType(page.url());
     if (next && /\/oferta\//.test(next) && next !== page.url()) {
-      await page.goto(next, { waitUntil: 'load', timeout: 60_000 });
-      await page.waitForLoadState('domcontentloaded');
+      await page.goto(next, { waitUntil: 'domcontentloaded', timeout: 60_000 });
     }
     await tryDismissSelectedVehicleInFilters(page);
     if (!/type=|pojazd=/i.test(page.url())) break;
   }
   const finalStrip = buildUrlStripVehicleType(page.url());
   if (finalStrip && /\/oferta\//.test(finalStrip) && finalStrip !== page.url()) {
-    await page.goto(finalStrip, { waitUntil: 'load', timeout: 60_000 });
-    await page.waitForLoadState('domcontentloaded');
+    await page.goto(finalStrip, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   }
   await tryDismissSelectedVehicleInFilters(page);
   await page.waitForTimeout(400);
@@ -428,8 +428,8 @@ export async function readListingTotalCount(
       return out.join(' \n ').slice(0, 32_000);
     })
     .catch(() => '')) as string;
-  if (u.length < 80) {
-    await page.waitForTimeout(1200);
+  if (u.length < 80 && !page.isClosed()) {
+    await page.waitForTimeout(400).catch(() => {});
     u = (await page
       .evaluate(() => {
         const main = document.querySelector(
