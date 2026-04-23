@@ -125,12 +125,21 @@ test('Intercars: каталог, фильтр, корзина, цены', async 
       pusty,
       'Koszyk: brak pozycji („jest pusty”) — ceny z listy nie wystąpią; w poprzednim kroku 2× „Do koszyka” musi zapisać sesję, bez przeładowania, które czyści wózek.',
     ).toBeFalsy();
+    const nPozycji = await page
+      .locator(
+        '#gc-main-content tr a[href*="/produkty/"], #gc-main-content tbody a[href*="/produkty/"], main tr a[href*="/produkty/"]',
+      )
+      .count();
+    expect(
+      nPozycji,
+      'Koszyk: min. 2 różne oferty w tabeli (href /produkty/…). Gdy 1 — drugi krok „Do koszyka" nie dodał pozycji; regresja „10,64 w body" błędnie sugerowała tylko format ceny.',
+    ).toBeGreaterThanOrEqual(2);
     for (const p of savedListPrices) {
       const s1 = p.toFixed(2).replace('.', ',');
       const ok = cartPageContainsListPrice(body, p);
       expect(
         ok,
-        `Koszyk: cena z listy (~${s1} zł) nie wykryta w body (gdy wózek niepusty — liczymy warianty 8,08/8.08/PLN). Body zaczyna: ${body.slice(0, 200)}…`,
+        `Koszyk: cena z listy (~${s1} zł) — brak w treści (po #gc-main-content), gdy wiersze/suma się zgadzają, sprawdź pl.miejsca w zł. Snap: ${body.length} znaków`,
       ).toBeTruthy();
     }
     const total = await readCartGrandTotal(page);

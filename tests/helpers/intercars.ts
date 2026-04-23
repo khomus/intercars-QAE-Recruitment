@@ -573,29 +573,36 @@ export async function addToCartByIndex(page: Page, productIndex: number): Promis
   if (idx >= 0) {
     const link = scope.locator('a[href*="/produkty/"]').nth(idx);
     await link.scrollIntoViewIfNeeded().catch(() => {});
-    /* Tylko **jeden** „Do koszyka" w tym wierszu; przy `el` = główny węzeł `count>1` kliknęłoby pierwszy w całej ofercie. */
-    for (let up = 1; up <= 9; up += 1) {
+    /* Przodek, w którego drzewie jest **dokładnie jeden** link oferty (ten wiersz), potem „Do koszyka".
+     * Wymaganie c===1 było zbyt restrykcyjne (0 lub 2+ w płytku). */
+    for (let up = 1; up <= 12; up += 1) {
       let tile: Locator = link;
       for (let d = 0; d < up; d += 1) {
         tile = tile.locator('xpath=..');
       }
+      const nLinks = await tile.locator('a[href*="/produkty/"]').count().catch(() => 0);
+      if (nLinks !== 1) {
+        continue;
+      }
       const btn = tile.getByRole('button', { name: /Do\s*koszyka|Dodaj\s+do\s+koszyka/i });
       const c = await btn.count().catch(() => 0);
-      if (c === 1) {
-        const b0 = btn.first();
-        await b0.scrollIntoViewIfNeeded().catch(() => {});
-        await b0
-          .click({ timeout: 20_000 })
-          .catch(() => b0.click({ force: true, timeout: 15_000 }).catch(() => {}));
-        await page.waitForLoadState('domcontentloaded').catch(() => {});
-        await page.waitForLoadState('networkidle', { timeout: 12_000 }).catch(() => {});
-        return;
+      if (c < 1) {
+        continue;
       }
+      const b0 = btn.first();
+      await b0.scrollIntoViewIfNeeded().catch(() => {});
+      await b0
+        .click({ timeout: 20_000 })
+        .catch(() => b0.click({ force: true, timeout: 15_000 }).catch(() => {}));
+      await page.waitForLoadState('domcontentloaded').catch(() => {});
+      await page.waitForLoadState('networkidle', { timeout: 12_000 }).catch(() => {});
+      return;
     }
   }
   const inList = scope.getByRole('button', { name: /Do koszyka/i });
-  if ((await inList.count().catch(() => 0)) > productIndex) {
-    const b = inList.nth(productIndex);
+  if ((await inList.count().catch(() => 0)) > 0) {
+    /* Po pierwszym dodaniu znika „Do koszyka" przy 1. produkcie — w scope **pierwszy** przycisk to **następna** oferta, nie .nth(1). */
+    const b = inList.nth(0);
     try {
       await b.scrollIntoViewIfNeeded({ timeout: 20_000 });
     } catch {
