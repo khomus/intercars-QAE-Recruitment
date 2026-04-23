@@ -590,6 +590,34 @@ export async function clickFirstUsableListFilter(page: Page): Promise<void> {
   }
 }
 
+/** After "Do koszyka" — wait for cart XHR/JSON or a toast, else the 2nd `goto` can outpace the 1st add. */
+async function waitForPdpAddToCartSettled(page: Page): Promise<void> {
+  if (page.isClosed()) {
+    return;
+  }
+  const resOk = (r: import('@playwright/test').Response) => {
+    if (r.status() >= 400) {
+      return false;
+    }
+    const u = r.url();
+    if (!/intercars\.pl/i.test(u) || r.request().resourceType() === 'document') {
+      return false;
+    }
+    return /basket|cart|kosz|dodaj|basket|add[-_]?|graphql|\/api\//i.test(u);
+  };
+  await page.waitForResponse(resOk, { timeout: 12_000 }).catch(() => {});
+  if (page.isClosed()) {
+    return;
+  }
+  await page
+    .getByText(/dodano|dodany|w\s+koszyku|kontynuuj|zamknij|powrót\s+do/i)
+    .first()
+    .waitFor({ state: 'visible', timeout: 5_000 })
+    .catch(() => {});
+  await page.waitForLoadState('domcontentloaded', { timeout: 6_000 }).catch(() => {});
+  await page.waitForTimeout(500).catch(() => {});
+}
+
 // List row clicks are flaky (same row / wrong "Do koszyka"). Always add from product page.
 async function addToCartOnProductPage(page: Page, productPath: string): Promise<void> {
   const raw = (productPath.split('?')[0] || '').trim();
@@ -664,7 +692,7 @@ async function addToCartOnProductPage(page: Page, productPath: string): Promise<
       .click({ force: true, timeout: 20_000 })
       .catch(() => b0.click({ force: true, timeout: 12_000 }).catch(() => {}));
   }
-  await page.waitForLoadState('domcontentloaded', { timeout: 10_000 }).catch(() => {});
+  await waitForPdpAddToCartSettled(page);
 }
 
 /** Same `productPath` as in `readListPricesForFirstProducts` — adds via **PDP** (stable; listing grid was unreliable). */
@@ -742,13 +770,13 @@ export async function readListPricesForFirstProducts(
     }
     return res;
   }, take);
-  return raw
+  const rows = raw
     .map((r) => {
       const price = parsePlPriceForListing(r.priceStr);
       return {
         title: r.title.trim(),
         price,
-        productPath: r.productPath || '',
+        productPath: (r.productPath || '').split('?')[0]!,
       } as { title: string; price: number; productPath: string };
     })
     .filter(
@@ -758,6 +786,15 @@ export async function readListPricesForFirstProducts(
         r.productPath.length > 0 &&
         /produkt/i.test(r.productPath),
     );
+  const seen = new Set<string>();
+  return rows.filter((r) => {
+    const k = r.productPath;
+    if (seen.has(k)) {
+      return false;
+    }
+    seen.add(k);
+    return true;
+  });
 }
 
 function parsePlPriceForListing(s: string): number {

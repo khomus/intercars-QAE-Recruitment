@@ -101,6 +101,10 @@ test('intercars: catalog, filter, cart, list vs basket prices', async ({ page })
     ).toBeGreaterThanOrEqual(2);
     savedListPrices.length = 0;
     savedListPrices.push(fromList[0]!.price, fromList[1]!.price);
+    expect(
+      fromList[0]!.productPath,
+      'Need two different /produkty/… URLs or the site may merge into one cart line',
+    ).not.toBe(fromList[1]!.productPath);
 
     await addToCartByProductPath(page, fromList[0]!.productPath);
     // no fixed sleep — avoids "page closed" if the run already hit the global timeout mid-sleep
