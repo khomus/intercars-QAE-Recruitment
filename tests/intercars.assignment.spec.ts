@@ -107,7 +107,6 @@ test('intercars: catalog, filter, cart, list vs basket prices', async ({ page })
     ).not.toBe(fromList[1]!.productPath);
 
     await addToCartByProductPath(page, fromList[0]!.productPath);
-    // no fixed sleep — avoids "page closed" if the run already hit the global timeout mid-sleep
     await dismissPostAddToCartOverlayIfVisible(page);
     await acceptCookiesIfVisible(page);
     await addToCartByProductPath(page, fromList[1]!.productPath);

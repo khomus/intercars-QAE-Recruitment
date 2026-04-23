@@ -1,7 +1,7 @@
-import type { Page, Locator, Frame } from '@playwright/test';
+import type { Page, Locator, Frame, Response } from '@playwright/test';
 
 // Helpers for intercars.pl — PL number formats, filters, list vs cart (assignment flow).
-// Site is a mess of divs; locators are defensive on prupose.
+// Locators are defensive; the DOM is noisy.
 
 /** Polish int: "12 345" in parens, etc. */
 export function parsePlInt(s: string): number {
@@ -59,11 +59,7 @@ async function dismissSalesmanagoWebPushEverywhere(page: Page): Promise<void> {
   }
 }
 
-/**
- * Newsletter / promo ("Nie przegap… rabatów") — blocks `#gc-main-content` from going :visible in trace.
- * SalesManago: `wpc_w_f_c_b-n` + all `page.frames()` (see `dismissSalesmanagoWebPushEverywhere`).
- * Click **NIE** inside the promo layer (dialog or a big `div`); never use a page-wide loose `/NIE/i` match.
- */
+/** Promo / SalesManago / dialog "Nie przegap…" — close with NIE. Do not scan all `div,section`+hasText (PLP minute hangs). */
 export async function dismissIntercarsPromoOrNewsletterIfVisible(page: Page): Promise<void> {
   if (page.isClosed()) return;
   for (let sm = 0; sm < 2; sm++) {
@@ -71,7 +67,6 @@ export async function dismissIntercarsPromoOrNewsletterIfVisible(page: Page): Pr
     if (page.isClosed()) return;
     await page.waitForTimeout(150).catch(() => {});
   }
-  // NEVER use `locator('div,section').filter({ hasText: … })` + count — on big PLPs it can run **minutes**.
   const promoHeading = /nie\s+przegap|najnowszych\s+rabat|rabaty\s+i\s+promocj/i;
   for (let round = 0; round < 3; round++) {
     if (page.isClosed()) return;
@@ -203,7 +198,7 @@ export async function openListingWithoutVehicleTypeParam(page: Page): Promise<vo
     await page.goto(finalStrip, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   }
   await tryDismissSelectedVehicleInFilters(page);
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(400).catch(() => {});
 }
 
 // Sum of subcategory counts under "Kategorie" (aside or #params_result); between Producent.
@@ -590,12 +585,12 @@ export async function clickFirstUsableListFilter(page: Page): Promise<void> {
   }
 }
 
-/** After "Do koszyka" — wait for cart XHR/JSON or a toast, else the 2nd `goto` can outpace the 1st add. */
+/** After "Do koszyka": wait for cart-like response + toast, so the next `goto` does not race the first add. */
 async function waitForPdpAddToCartSettled(page: Page): Promise<void> {
   if (page.isClosed()) {
     return;
   }
-  const resOk = (r: import('@playwright/test').Response) => {
+  const resOk = (r: Response) => {
     if (r.status() >= 400) {
       return false;
     }
@@ -603,7 +598,7 @@ async function waitForPdpAddToCartSettled(page: Page): Promise<void> {
     if (!/intercars\.pl/i.test(u) || r.request().resourceType() === 'document') {
       return false;
     }
-    return /basket|cart|kosz|dodaj|basket|add[-_]?|graphql|\/api\//i.test(u);
+    return /basket|cart|kosz|dodaj|add[-_]?|graphql|\/api\//i.test(u);
   };
   await page.waitForResponse(resOk, { timeout: 12_000 }).catch(() => {});
   if (page.isClosed()) {
@@ -618,20 +613,16 @@ async function waitForPdpAddToCartSettled(page: Page): Promise<void> {
   await page.waitForTimeout(500).catch(() => {});
 }
 
-// List row clicks are flaky (same row / wrong "Do koszyka"). Always add from product page.
 async function addToCartOnProductPage(page: Page, productPath: string): Promise<void> {
   const raw = (productPath.split('?')[0] || '').trim();
   if (!/produkt/i.test(raw)) {
     throw new Error(`addToCart: need a /produkty/… path, got: ${productPath}`);
   }
   const target = raw.startsWith('/') ? raw : `/${raw}`;
-  // `load` + `networkidle` are dangerous here: long hangs; SPA keeps requests open → no "idle"
   await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 45_000 });
   await acceptCookiesIfVisible(page);
-  // SalesManago injects an iframe async — give it a beat before `dismiss` walks `page.frames()`.
   await page.waitForTimeout(600).catch(() => {});
   await dismissIntercarsPromoOrNewsletterIfVisible(page);
-  // `first()` on `#gc-main-content, main, [role=main]` can hit an empty/placeholder node — then CTA is "missing".
   const pdpName = /Dodaj\s+do\s+koszyka|Dodaj\s*do\s*koszyka|Do\s*koszyka/i;
   const root = page
     .getByRole('main')
