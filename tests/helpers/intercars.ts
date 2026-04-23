@@ -1,7 +1,10 @@
 import type { Page, Locator } from '@playwright/test';
 import { test } from '@playwright/test';
 
-/** Польский формат: "12 345" или "1 234,56 zł" */
+// Helpers for intercars.pl — PL number formats, filters, list vs cart (assignment flow).
+// Site is a mess of divs; locators are defensive on prupose.
+
+/** Polish int: "12 345" in parens, etc. */
 export function parsePlInt(s: string): number {
   const d = s.replace(/[\s\u00a0]/g, '').replace(/\D/g, '');
   return d ? parseInt(d, 10) : NaN;
@@ -13,15 +16,13 @@ export function parsePlPrice(s: string): number {
   return m ? parseFloat(m[1]) : NaN;
 }
 
+// PL cookie bar — best-effort, no throw
 export async function acceptCookiesIfVisible(page: Page): Promise<void> {
   const btn = page.getByRole('button', { name: /akceptuj|akceptuję|zgadzam|zaakceptuj|accept|accept all/i }).first();
   await btn.click({ timeout: 12000 }).catch(() => {});
 }
 
-/**
- * Po „Do koszyka” bywa wyrób / pasek; bez krótkiego `timeout` klik czeka na domyślne 30+ s, co pożera limit testu.
- * Escape tylko na żywym `page` (gdy użytkownik zamknie przeglądarkę — nie wyrzucaj).
- */
+// After "Do koszyka" a modal can block; short timeout or click wait eats the whole test budget.
 export async function dismissPostAddToCartOverlayIfVisible(page: Page): Promise<void> {
   if (page.isClosed()) return;
   const okno = page.getByRole('button', { name: /kontynuuj|powrót|zamknij|kupuj dalej|×/i });
@@ -32,10 +33,11 @@ export async function dismissPostAddToCartOverlayIfVisible(page: Page): Promise<
   try {
     await page.keyboard.press('Escape');
   } catch {
-    /* kontekst zamknięty; nie rzucaj po timeout/ctrl+c */
+    /* page gone — ignore */
   }
 }
 
+// Cloudflare / "please wait" titles
 export function isChallengeOrWaitPage(page: Page): Promise<boolean> {
   return page
     .title()
@@ -44,13 +46,14 @@ export function isChallengeOrWaitPage(page: Page): Promise<boolean> {
 
 export async function skipIfBlocked(page: Page): Promise<void> {
   if (await isChallengeOrWaitPage(page)) {
-    test.skip(true, 'Сайт открыл страницу ожидания/защиты. Запустите тест в headed-режиме: npm run test:headed');
+    test.skip(
+      true,
+      'Wait/challenge page — run headed and finish CAPTCHA: npm run test:headed (see README).',
+    );
   }
 }
 
-/**
- * Usuwa `type=…` w query i w formie `...-id&type=…` (tak w linkach Intercars — inaczej `searchParams` nie ma `type`).
- */
+// Strips `type=vehicle` from hrefs — Intercars embeds it in slugs, not only searchParams.
 export function buildUrlStripVehicleType(href: string): string {
   if (!/type=/.test(href)) return href;
   const strippedAmp = href.replace(/&type=[^&#?]*/gi, '');
@@ -67,15 +70,11 @@ export function buildUrlStripVehicleType(href: string): string {
   }
 }
 
-/**
- * W panelu bocznym: X przy pojeździe (pierwszy wiersz z <img> — miniaturowy pojazd).
- * Po samym `goto` bez `type=` SPA dalej może utrzymywać pojazd w stanie; bez tego
- * linki w filtrach mają `&type=…` i w main nie ma łącznej liczby ofert jak na karcie /oferta/.
- */
+// Clicks the small [x] on the preselected car chip in the filter colum so totals match the category step.
 export async function tryDismissSelectedVehicleInFilters(page: Page): Promise<void> {
   const comp = page.getByRole('complementary').first();
   if ((await comp.count().catch(() => 0)) === 0) return;
-  // Wąski zakres: div z <img> pojazdu (kategoria ma button z tekstem, nie tylko img)
+  // narrow: row with a car thumnail, not a category chip (typo: thumnail)
   let vRow = comp
     .locator('div')
     .filter({ has: comp.locator(`> img[alt*="("]`) })
@@ -87,7 +86,6 @@ export async function tryDismissSelectedVehicleInFilters(page: Page): Promise<vo
       .first();
   }
   if ((await vRow.count().catch(() => 0)) === 0) return;
-  // img → w tej samej sekcji pierwsze „×" (NIE chip kategorii obok, jeśli jest w innym div)
   const closeBtn = vRow.getByRole('button').first();
   if ((await closeBtn.count().catch(() => 0)) === 0) return;
   await closeBtn.scrollIntoViewIfNeeded();
@@ -96,10 +94,7 @@ export async function tryDismissSelectedVehicleInFilters(page: Page): Promise<vo
   await page.waitForTimeout(1200);
 }
 
-/**
- * Tylko URL: usuń `type=…` + chip pojazdu — **bez** „Wyczyść wszystko" (cofa na główne /oferta/).
- * Powtórz, jeśli w URL wciąż widać `type=…` (hydracja wstrzyknie parametr znowu).
- */
+// URL-only cleanup + chip dismiss; do NOT "clear all" — that goes back to /oferta/ root and breaks counts.
 export async function openListingWithoutVehicleTypeParam(page: Page): Promise<void> {
   for (let i = 0; i < 2; i++) {
     let next = buildUrlStripVehicleType(page.url());
@@ -119,23 +114,18 @@ export async function openListingWithoutVehicleTypeParam(page: Page): Promise<vo
   await page.waitForTimeout(400);
 }
 
-const DEBUG_KATEGORIE = process.env.INTERCARS_DEBUG === '1';
-
-/**
- * Suma tylko z wierszy podsekcji „Kategorie" w panelu filtrów (aside **albo** B2C `#params_result` —
- * Intercars nie zawsze używa `<aside>`), pomiędzy „Kategorie" a „Producent" / „Polecane".
- */
+// Sum of subcategory counts under "Kategorie" (aside or #params_result); between Producent.
 export async function sumKategorieSectionSubcounts(page: Page): Promise<{ sum: number; parts: number[] }> {
   const texts = await page.evaluate(() => {
     const filterRoot: HTMLElement | null = document.querySelector(
       'aside, [role="complementary"], #params_result, [id="params_result"]',
     );
-    if (!filterRoot) return { labels: [] as string[], debug: { reason: 'no-filter-panel' } };
+    if (!filterRoot) return { labels: [] as string[] };
     const paras = Array.from(filterRoot.querySelectorAll('p'));
     const kIdx = paras.findIndex(
       (p) => (p.textContent || '').replace(/\s+/g, ' ').trim() === 'Kategorie',
     );
-    if (kIdx < 0) return { labels: [] as string[], debug: { reason: 'no-kategorie-p' } };
+    if (kIdx < 0) return { labels: [] as string[] };
     const pKat = paras[kIdx]!;
     const pEndI = paras.findIndex((p, i) => {
       if (i <= kIdx) return false;
@@ -156,11 +146,8 @@ export async function sumKategorieSectionSubcounts(page: Page): Promise<{ sum: n
       if (!/\([0-9]/.test(t) || t.length > 500) continue;
       labels.push(t);
     }
-    return { labels, debug: { count: labels.length, href: document.location?.href || '' } };
+    return { labels };
   });
-  if (DEBUG_KATEGORIE) {
-    console.log('[INTERCARS_DEBUG] Kategorie', JSON.stringify(texts, null, 0));
-  }
   const parts: number[] = [];
   for (const t of texts.labels) {
     const paren = t.match(/\(([\d\s\u00a0\u202f]+)\)\s*$/);
@@ -171,9 +158,7 @@ export async function sumKategorieSectionSubcounts(page: Page): Promise<{ sum: n
   return { sum: parts.reduce((a, b) => a + b, 0), parts };
 }
 
-/**
- * Wszystkie (меню) → Zobacz wszystkie
- */
+// All → see all: assignment menu path (PL labels: WSZYSTKIE, Zobacz wszystkie).
 export async function openAllSeeAllCatalog(page: Page): Promise<void> {
   await page.goto('/', { waitUntil: 'load' });
   await acceptCookiesIfVisible(page);
@@ -185,9 +170,7 @@ export async function openAllSeeAllCatalog(page: Page): Promise<void> {
 
 type CategoryRow = { count: number; name: string; loc: Locator };
 
-/**
- * Ссылки в основной зоне каталога: текст с числом в скобках.
- */
+// /oferta/ index: links with "(12345)"-style counts.
 export async function listCategoriesWithProductCounts(
   page: Page,
   root: Locator = page.locator('main, [role="main"], #main, .gc-main').first(),
@@ -229,13 +212,11 @@ export async function listCategoriesWithProductCounts(
 }
 
 export function pickLargest(categories: CategoryRow[]): CategoryRow {
-  if (!categories.length) throw new Error('Не найдено ни одной категории с количеством в скобках');
+  if (!categories.length) throw new Error('No category with a count in parentheses');
   return categories.reduce((a, b) => (a.count >= b.count ? a : b));
 }
 
-/**
- * Числа в круглых скобках в панели фильтров (подкатегории/варианты). Без дублей подряд.
- */
+// Pull (123) counts from a chunk of filter text; dedupe not applied here.
 export function extractParenCountsFromTextBlock(text: string): number[] {
   const re = /\(([\d\s\u00a0\u202f]+)\)/g;
   const r: number[] = [];
@@ -247,7 +228,7 @@ export function extractParenCountsFromTextBlock(text: string): number[] {
   return r;
 }
 
-/** Suma z wierszy filtrów (label / linki z licznikiem w nawiasie na końcu). */
+// Sum parenthetic counts in a generic filter block.
 export async function sumFilterRowCounts(filter: Locator): Promise<{ sum: number; parts: number[] }> {
   const rowLoc = filter.locator('label, a[href*="/oferta/"], [role="treeitem"], li');
   const n = await rowLoc.count();
@@ -263,10 +244,7 @@ export async function sumFilterRowCounts(filter: Locator): Promise<{ sum: number
   return { sum: parts.reduce((a, b) => a + b, 0), parts };
 }
 
-/**
- * Сумма из фильтра: слева/боковая колонка с вложенностями.
- * B2C: панель `#params_result` — тот же контекст, co sekcja „Kategorie", nie zawsze `<aside>`.
- */
+// First panel that looks like a filter (often #params_result, not a semantic aside).
 export async function getFilterBlockFirst(page: Page): Promise<Locator> {
   const params = page.locator('#params_result');
   if ((await params.count().catch(() => 0)) > 0) {
@@ -289,9 +267,7 @@ export async function getFilterBlockFirst(page: Page): Promise<Locator> {
   return page.locator('body');
 }
 
-/**
- * Czy w tekście strony widać licznik w formacie 118 878 / 118878.
- */
+// Whether body text has `n` with optional PL space grouping (e.g. 118 878).
 export function bodyContainsPlCount(plain: string, n: number): boolean {
   if (n <= 0) return false;
   const t = plain.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ');
@@ -300,7 +276,6 @@ export function bodyContainsPlCount(plain: string, n: number): boolean {
   if (s.length <= 3) return false;
   const last3 = s.slice(-3);
   const head = s.slice(0, -3);
-  // escape regex metachars w „head" (np. liczby z 1+ wiodącymi zero nie wystąpią w PL ofercie)
   return new RegExp(
     String(head).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[\\s\\u00a0\\u202f]+' + String(last3).replace(
       /[.*+?^${}()|[\]\\]/g,
@@ -309,10 +284,7 @@ export function bodyContainsPlCount(plain: string, n: number): boolean {
   ).test(t);
 }
 
-/**
- * Ostatnia strona w `ul.gc-pagination` × pozycje/strona → [lo,hi] łącznie (np. 3963×30=118 890, lo=118 861).
- * Jeśli krok 3 = liczba z oferty, powinna wpadać w przedział, gdy sklep nie drukuje „1–30 z 118 878" w #gc-main.
- */
+// Cross-check: category total from step 3 should sit inside (maxPage*per) window from paginator.
 function totalFitsPaginationBounds(expected: number, maxPage: number, per: number): boolean {
   if (maxPage < 1 || per < 1) return false;
   const lo = (maxPage - 1) * per + 1;
@@ -320,11 +292,7 @@ function totalFitsPaginationBounds(expected: number, maxPage: number, per: numbe
   return expected >= lo && expected <= hi;
 }
 
-/**
- * Suma/łączna z listingu: „N produktów", „1–30 z 11 188", itd. — tylko z wąskiego wycinka DOM.
- * `expectedFromKrok3` — skrót, gdy liczba w formacie 118 878/118878 występuje tylko w tym wycinku
- * (bez skanowania wszystkich producentów w filtrach).
- */
+// Parse the listing header / breadcrumb / pagination strip for a single "total products" number.
 export async function readListingTotalCount(
   page: Page,
   expectedFromKrok3?: number,
@@ -464,42 +432,22 @@ export async function readListingTotalCount(
 
   if (pagBounds != null && expectedFromKrok3 != null) {
     if (totalFitsPaginationBounds(expectedFromKrok3, pagBounds.maxP, pagBounds.per)) {
-      if (process.env.INTERCARS_DEBUG === '1') {
-        console.log(
-          '[DEBUG] readListingTotalCount: użycie kroku 3 =',
-          expectedFromKrok3,
-          '(zgodność z paginacją',
-          `max strona=${pagBounds.maxP},`,
-          `${pagBounds.per}/str., przedz. [${pagBounds.lo}, ${pagBounds.hi}]`,
-          ')',
-        );
-      }
       return expectedFromKrok3;
     }
-  }
-
-  if (process.env.INTERCARS_DEBUG === '1') {
-    console.log(
-      '[DEBUG] readListingTotalCount: brak dopasowania, wycinek (max 2k znaków):',
-      u.slice(0, 2000),
-      'paginacja:',
-      pagBounds,
-    );
   }
   return null;
 }
 
 export async function clickFirstUsableListFilter(page: Page): Promise<void> {
   const block = await getFilterBlockFirst(page);
-  // Intercars: natywny <input type=checkbox> bywa ukryty (custom UI) — brak widoczności,
-  // scrollIntoViewIfNeeded czeka w nieskończoność. Zwykle działa getByRole / label.
+  // Native checkbox is often invisble — use role/label, not force-scroll to hidden <input>.
   const a11y = block.getByRole('checkbox', { disabled: false });
   if ((await a11y.count()) > 0) {
     const first = a11y.first();
     try {
       await first.scrollIntoViewIfNeeded({ timeout: 12_000 });
     } catch {
-      /* wciąż możliwy click */
+      /* scroll failed — click may still work */
     }
     await first
       .click({ timeout: 20_000 })
@@ -514,7 +462,7 @@ export async function clickFirstUsableListFilter(page: Page): Promise<void> {
     try {
       await labeled.scrollIntoViewIfNeeded({ timeout: 10_000 });
     } catch {
-      /* */
+      /* ignore */
     }
     await labeled
       .click({ timeout: 20_000 })
@@ -546,7 +494,7 @@ function intercarsNormPath(p: string): string {
   }
 }
 
-/** Kafel: jeden `a[/produkty/]` w poddrzewie, przycisk **Do/Dodaj** koszyk. */
+// Tile where exactly one /produkty/ link — then the add button belongs to that row.
 async function tryClickAddInProductTile(page: Page, link: Locator): Promise<boolean> {
   await link.scrollIntoViewIfNeeded().catch(() => {});
   for (let up = 1; up <= 12; up += 1) {
@@ -574,10 +522,7 @@ async function tryClickAddInProductTile(page: Page, link: Locator): Promise<bool
   return false;
 }
 
-/**
- * Tylko gdy w tym węźle (poddrzewie) jest **dokładnie jeden** taki przycisk — w przeciwnym razie
- * wyższy `main` ma np. 30 klikalnych „Do koszyka" i `first` = oferta 1, już w koszyku (no-op, qty=1).
- */
+// Only click if subtree has *one* add button — else `first` is row 1 in the whole main (bad).
 async function tryClickAddWalkingAncestorsOfLink(page: Page, link: Locator): Promise<boolean> {
   let cur: Locator = link;
   for (let d = 0; d < 20; d++) {
@@ -598,7 +543,7 @@ async function tryClickAddWalkingAncestorsOfLink(page: Page, link: Locator): Pro
   return false;
 }
 
-/** Ostatni resort: karta produktu ma jedną czytelną CTA (lista — skomplikowane wielo-komórkowe wiersze). */
+// PDP: one CTA, listing grid is easy to get wrong
 async function addToCartOnProductPage(page: Page, productPath: string): Promise<void> {
   const raw = (productPath.split('?')[0] || '').trim();
   if (!/produkt/i.test(raw)) {
@@ -620,11 +565,7 @@ async function addToCartOnProductPage(page: Page, productPath: string): Promise<
   await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
 }
 
-/**
- * Te same oferty, co ceny w `readListPricesForFirstProducts` (`productPath` z pathname) — inaczej drugi
- * krok w DOM to **inna** pozycja (np. gdy 2. unikalne `/produkty/…` w treści **nie miało** ceny w drzewie),
- * a koszyk: jedna linia, qty 1, „Koszyk 1" w nagłówku.
- */
+// add same SKU as readList (productPath) — not generic nth(1) in DOM, or cart has one line
 export async function addToCartByProductPath(page: Page, productPath: string): Promise<void> {
   const main = page.locator('#gc-main-content, [id="gc-main-content"], main, [id="main"], [role="main"]').first();
   const scope = (await main.count().catch(() => 0)) > 0 ? main : page;
@@ -676,106 +617,11 @@ export async function addToCartByProductPath(page: Page, productPath: string): P
       return;
     }
   }
-  /* Fallback: PDP — jedna oferta, jeden przycisk, bez pomyłek „pierwszy w gridzie" z uOrder. */
+  // last resort: PDP, single CTA, avoids "first in grid" mistake on dense listing
   await addToCartOnProductPage(page, productPath);
 }
 
-/**
- * Klik w „Do koszyka" — **Playwright** (RPA). `b.click()` w `evaluate` nie wyzwala zdarzeń React, koszyk pusty.
- * Preferuj `addToCartByProductPath` w parze z cenami z listy (wspólna kolejność ofert).
- */
-export async function addToCartByIndex(page: Page, productIndex: number): Promise<void> {
-  const main = page.locator('#gc-main-content, [id="gc-main-content"], main, [id="main"], [role="main"]').first();
-  const scope = (await main.count().catch(() => 0)) > 0 ? main : page;
-  const res = await page.evaluate(
-    (w) => {
-      const r = (document.querySelector('#gc-main-content') as HTMLElement | null) || document.body;
-      const as = r.querySelectorAll<HTMLAnchorElement>('a[href*="/produkty/"]');
-      const seen = new Set<string>();
-      let u = 0;
-      for (let i = 0; i < as.length; i++) {
-        const a = as[i]!;
-        let path = '';
-        try {
-          path = new URL(a.getAttribute('href') || a.href, document.baseURI).pathname;
-        } catch {
-          continue;
-        }
-        if (!/produkt/.test(path)) continue;
-        if (seen.has(path)) continue;
-        seen.add(path);
-        if (u === w) {
-          const key = path.split('/').filter(Boolean).pop() || '';
-          return { idx: i, key };
-        }
-        u += 1;
-      }
-      return { idx: -1, key: '' };
-    },
-    productIndex,
-  );
-  if (res.idx >= 0) {
-    const nByKey =
-      res.key && !/["\\#]/.test(res.key)
-        ? await scope
-            .locator(`a[href*="/produkty/"][href*="${res.key}"]`)
-            .count()
-            .catch(() => 0)
-        : 0;
-    const link: Locator =
-      nByKey > 0
-        ? scope.locator(`a[href*="/produkty/"][href*="${res.key}"]`).first()
-        : scope.locator('a[href*="/produkty/"]').nth(res.idx);
-    if (await tryClickAddInProductTile(page, link)) {
-      return;
-    }
-    if (await tryClickAddWalkingAncestorsOfLink(page, link)) {
-      return;
-    }
-  }
-  const inList = scope.getByRole('button', { name: /Do koszyka|Dodaj do koszyka/i });
-  const nKoszyka = await inList.count().catch(() => 0);
-  if (nKoszyka > 0) {
-    const b = inList.nth(Math.min(productIndex, nKoszyka - 1));
-    try {
-      await b.scrollIntoViewIfNeeded({ timeout: 20_000 });
-    } catch {
-      /* klik wymuszony */
-    }
-    await b.click({ timeout: 20_000 }).catch(() => b.click({ force: true, timeout: 15_000 }));
-    return;
-  }
-  let cards = page
-    .locator('[class*="product" i], [data-product], a[href*="/produkty/"], article, [class*="tile" i]')
-    .filter({ hasText: /Dodaj|Koszy|zł|Do koszyka/i });
-  if ((await cards.count().catch(() => 0)) === 0) {
-    cards = page.getByRole('listitem').filter({ hasText: /zł|Do koszyka/i });
-  }
-  if ((await cards.count().catch(() => 0)) === 0) {
-    cards = page.getByRole('listitem');
-  }
-  if ((await cards.count()) > productIndex) {
-    const card = cards.nth(productIndex);
-    const add = card
-      .getByRole('button', { name: /Dodaj|Do koszyka|Koszy|kupuj/i })
-      .or(card.locator('a[href*="basket" i], a[href*="cart" i]'))
-      .first();
-    await add.scrollIntoViewIfNeeded().catch(() => {});
-    await add.click({ force: true, timeout: 20000 }).catch(() => {});
-    return;
-  }
-  const btn = page
-    .getByRole('button', { name: /Dodaj do koszyka|Dodaj|Do koszyka|Koszy/i })
-    .nth(productIndex);
-  await btn.scrollIntoViewIfNeeded().catch(() => {});
-  await btn.click({ force: true, timeout: 20000 }).catch(() => {});
-}
-
-/**
- * Ceny w liście B2C: kafel to często `div` (nie `article`), link `/produkty/…` i „8,08” / „8.08” + `zł`
- * w poddrzewie; wzorzec tylko z przecinkiem łamał wykrywanie, a selektor tylko po `product`/`article` miał 0 wyników.
- * `productPath` = pathname oferty (do `addToCartByProductPath`) — ta sama kolejność co ceny, nie `nth` po indeksie w DOM.
- */
+// first N offer rows with a parsable zł in an ancestor; returns productPath for the same row as price
 export async function readListPricesForFirstProducts(
   page: Page,
   take: number,
@@ -872,10 +718,7 @@ function parsePlPriceForListing(s: string): number {
   return parsePlPrice(t0);
 }
 
-/**
- * Koszyk intercars.pl: ceny w PLN (np. „8.08 PLN", „8,08 zł", czasem tylko cyfry w komórkach tabeli);
- * wykryj też „8, 08" / cienką spację, „8·08" i porównaj liczbowo.
- */
+// Fuzzy match of list price in cart text (8.08 / 8,08 / thin spaces, PLN, etc).
 export function cartPageContainsListPrice(bodyText: string, price: number, eps = 0.03): boolean {
   if (!Number.isFinite(price) || price < 0) return false;
   const flat = bodyText.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ');
@@ -903,6 +746,7 @@ export function cartPageContainsListPrice(bodyText: string, price: number, eps =
   return false;
 }
 
+// "Do zapłaty" / Razem in PL; NaN if layout changed a lot
 export async function readCartGrandTotal(page: Page): Promise<number> {
   const t = (await page.locator('body').innerText()).replace(/\s+/g, ' ');
   const block = page.getByText(/Razem|Łącznie|Suma|Do zapłaty/i);

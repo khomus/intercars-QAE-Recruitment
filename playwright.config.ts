@@ -1,8 +1,6 @@
 import { defineConfig, devices } from '@playwright/test';
 
-/**
- * База проекта. URL приложения, storageState и т.д. — по описанию задания.
- */
+// intercars.pl live site — pl-PL matches the shop UI.
 export default defineConfig({
   testDir: './tests',
   timeout: 120_000,
@@ -15,8 +13,8 @@ export default defineConfig({
   use: {
     baseURL: 'https://intercars.pl',
     locale: 'pl-PL',
-    trace: 'on',
-    video: 'on',
+    trace: 'retain-on-failure',
+    video: 'retain-on-failure',
   },
   projects: [
     {

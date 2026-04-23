@@ -1,57 +1,47 @@
-# intercars-QAE-Recruitment
+# intercars.pl — QAE Playwright assignment
 
-Playwright + TypeScript: test z treści rekrutacyjnej (Intercars.pl).
+End-to-end test: catalog → largest category → filter sum check → one filter → two line items in cart → prices vs list + total (Polish shop UI, UI strings stay in PL).
 
-## Wymagania
+## Requirements
 
 - Node.js 18+
 - `npm install`
 - `npx playwright install chromium`
 
-## Uruchomienie
+## Run
 
-Wszystkie testy (w tym dymkowy `example.spec.ts`):
+Assignment scenario only:
+
+```bash
+npx playwright test tests/intercars.assignment.spec.ts
+# or
+npm run test:assignment
+```
+
+All tests in `tests/`:
 
 ```bash
 npm test
 ```
 
-Tylko scenariusz zadania:
-
-```bash
-npx playwright test tests/intercars.assignment.spec.ts
-```
-
-Tryb z otwartą przeglądarką (polecany przy captcha, challenge lub stronie „Cierpliwości”):
+Headed (if CAPTCHA / wait page appears — complete manually, per spec):
 
 ```bash
 npm run test:headed
 ```
 
-Raport HTML po uruchomieniu:
+HTML report:
 
 ```bash
 npx playwright show-report
 ```
 
-## Debug (logi zliczeń, URL)
+## Layout
 
-W PowerShell przed `npx playwright test`:
+- `tests/intercars.assignment.spec.ts` — main flow (All → see all, category, filters, cart assertions).
+- `tests/helpers/intercars.ts` — cookies, vehicle query strip, subcategory sum, add-to-cart by product path, PL price parsing, cart text checks.
 
-```powershell
-$env:INTERCARS_DEBUG = "1"
-npx playwright test tests/intercars.assignment.spec.ts --workers=1
-```
+## Notes
 
-Wypisze m.in. `[DEBUG] url` oraz w konsoli etykiety wierszy z sekcji filtra „Kategorie”.
-
-## Uwagi
-
-- Interfejs serwisu jest po polsku (np. menu **WSZYSTKIE** → **Zobacz wszystkie** odpowiada opisowi *All* → *See all* w zadaniu).
-- Jeśli pojawi się **CAPTCHA** lub weryfikacja — dokończ ją ręcznie w trybie `test:headed` (zgodnie z treścią zadania).
-- Zautomatyzowana przeglądarka może dostać stronę oczekiwania / Cloudflare: uruchom ponownie w trybie headed albo w zwykłej sesji; test zgłosi `test.skip` z krótkim powodem, jeśli tytuł strony wskazuje na blokadę.
-
-## Struktura
-
-- `tests/intercars.assignment.spec.ts` — główny scenariusz.
-- `tests/helpers/intercars.ts` — akceptacja cookies, wybór kategorii, filtry, koszyk, parsowanie cen w PLN.
+- Menu labels are Polish (e.g. **WSZYSTKIE** / **Zobacz wszystkie** = *All* / *See all* in the task).
+- Flaky automation is normal on production; if the title looks like a challenge / Cloudflare, the test will `test.skip` and you can retry in headed mode.
