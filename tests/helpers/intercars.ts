@@ -575,13 +575,15 @@ async function tryClickAddInProductTile(page: Page, link: Locator): Promise<bool
 }
 
 /**
- * Wiersz: pierwszy przycisk „do koszyka" w pionowym łańcuchu **przodków** linku (gdy w kafle nie wykryto nLinks=1).
+ * Tylko gdy w tym węźle (poddrzewie) jest **dokładnie jeden** taki przycisk — w przeciwnym razie
+ * wyższy `main` ma np. 30 klikalnych „Do koszyka" i `first` = oferta 1, już w koszyku (no-op, qty=1).
  */
 async function tryClickAddWalkingAncestorsOfLink(page: Page, link: Locator): Promise<boolean> {
   let cur: Locator = link;
-  for (let d = 0; d < 18; d++) {
+  for (let d = 0; d < 20; d++) {
     const b = cur.getByRole('button', { name: /Do\s*koszyka|Dodaj\s*do\s*koszyka/i });
-    if ((await b.count().catch(() => 0)) > 0) {
+    const n = await b.count().catch(() => 0);
+    if (n === 1) {
       const b0 = b.first();
       await b0.scrollIntoViewIfNeeded().catch(() => {});
       await b0
@@ -594,6 +596,28 @@ async function tryClickAddWalkingAncestorsOfLink(page: Page, link: Locator): Pro
     cur = cur.locator('xpath=..');
   }
   return false;
+}
+
+/** Ostatni resort: karta produktu ma jedną czytelną CTA (lista — skomplikowane wielo-komórkowe wiersze). */
+async function addToCartOnProductPage(page: Page, productPath: string): Promise<void> {
+  const raw = (productPath.split('?')[0] || '').trim();
+  if (!/produkt/i.test(raw)) {
+    return;
+  }
+  const target = raw.startsWith('/') ? raw : `/${raw}`;
+  await page.goto(target, { waitUntil: 'load', timeout: 60_000 });
+  await page.waitForLoadState('domcontentloaded');
+  await acceptCookiesIfVisible(page);
+  const main = page.locator('#gc-main-content, [id="gc-main-content"], main, [role="main"], body').first();
+  const btn = main
+    .getByRole('button', { name: /Do\s*koszyka|Dodaj\s*do\s*koszyka|Dodaj do koszyka/i })
+    .first();
+  await btn.scrollIntoViewIfNeeded().catch(() => {});
+  await btn
+    .click({ timeout: 20_000 })
+    .catch(() => btn.click({ force: true, timeout: 15_000 }).catch(() => {}));
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
 }
 
 /**
@@ -652,62 +676,8 @@ export async function addToCartByProductPath(page: Page, productPath: string): P
       return;
     }
   }
-  const uOrder = await page.evaluate((pathNorm) => {
-    const r = (document.querySelector('#gc-main-content') as HTMLElement | null) || document.body;
-    const as = r.querySelectorAll<HTMLAnchorElement>('a[href*="/produkty/"]');
-    const seen = new Set<string>();
-    let order = 0;
-    for (let i = 0; i < as.length; i++) {
-      const a = as[i]!;
-      let p = '';
-      try {
-        p = new URL(a.getAttribute('href') || a.href, document.baseURI).pathname;
-      } catch {
-        const h = a.getAttribute('href') || '';
-        if (!/produkt/.test(h)) continue;
-        p = h;
-      }
-      p = p.split('?')[0]!.replace(/\/$/, '');
-      try {
-        p = decodeURIComponent(p).toLowerCase();
-      } catch {
-        p = p.toLowerCase();
-      }
-      if (seen.has(p)) continue;
-      seen.add(p);
-      if (p === pathNorm) {
-        return order;
-      }
-      order += 1;
-    }
-    return -1;
-  }, want);
-  if (uOrder >= 0) {
-    let cards = page
-      .locator('[class*="product" i], [data-product], a[href*="/produkty/"], article, [class*="tile" i]')
-      .filter({ hasText: /Dodaj|Koszy|zł|Do koszyka/i });
-    if ((await cards.count().catch(() => 0)) === 0) {
-      cards = page.getByRole('listitem').filter({ hasText: /zł|Do koszyka/i });
-    }
-    if ((await cards.count().catch(() => 0)) === 0) {
-      cards = page.getByRole('listitem');
-    }
-    if ((await cards.count().catch(() => 0)) > uOrder) {
-      const card = cards.nth(uOrder);
-      const add = card
-        .getByRole('button', { name: /Dodaj|Do koszyka|Koszy|kupuj/i })
-        .or(card.locator('a[href*="basket" i], a[href*="cart" i]'))
-        .first();
-      await add.scrollIntoViewIfNeeded().catch(() => {});
-      await add.click({ force: true, timeout: 20_000 }).catch(() => {});
-      return;
-    }
-    const btn = page
-      .getByRole('button', { name: /Dodaj do koszyka|Dodaj|Do koszyka|Koszy/i })
-      .nth(uOrder);
-    await btn.scrollIntoViewIfNeeded().catch(() => {});
-    await btn.click({ force: true, timeout: 20_000 }).catch(() => {});
-  }
+  /* Fallback: PDP — jedna oferta, jeden przycisk, bez pomyłek „pierwszy w gridzie" z uOrder. */
+  await addToCartOnProductPage(page, productPath);
 }
 
 /**
