@@ -488,139 +488,47 @@ export async function clickFirstUsableListFilter(page: Page): Promise<void> {
   }
 }
 
-function intercarsNormPath(p: string): string {
-  const noQ = p.split('?')[0] ?? p;
-  try {
-    return decodeURIComponent(noQ.replace(/\/$/, '')).toLowerCase();
-  } catch {
-    return noQ.replace(/\/$/, '').toLowerCase();
-  }
-}
-
-// Tile where exactly one /produkty/ link — then the add button belongs to that row.
-async function tryClickAddInProductTile(page: Page, link: Locator): Promise<boolean> {
-  await link.scrollIntoViewIfNeeded().catch(() => {});
-  for (let up = 1; up <= 12; up += 1) {
-    let tile: Locator = link;
-    for (let d = 0; d < up; d += 1) {
-      tile = tile.locator('xpath=..');
-    }
-    const nLinks = await tile.locator('a[href*="/produkty/"]').count().catch(() => 0);
-    if (nLinks !== 1) {
-      continue;
-    }
-    const btn = tile.getByRole('button', { name: /Do\s*koszyka|Dodaj\s+do\s+koszyka/i });
-    if ((await btn.count().catch(() => 0)) < 1) {
-      continue;
-    }
-    const b0 = btn.first();
-    await b0.scrollIntoViewIfNeeded().catch(() => {});
-    await b0
-      .click({ timeout: 20_000 })
-      .catch(() => b0.click({ force: true, timeout: 15_000 }).catch(() => {}));
-    await page.waitForLoadState('domcontentloaded').catch(() => {});
-    await page.waitForLoadState('networkidle', { timeout: 12_000 }).catch(() => {});
-    return true;
-  }
-  return false;
-}
-
-// Only click if subtree has *one* add button — else `first` is row 1 in the whole main (bad).
-async function tryClickAddWalkingAncestorsOfLink(page: Page, link: Locator): Promise<boolean> {
-  let cur: Locator = link;
-  for (let d = 0; d < 20; d++) {
-    const b = cur.getByRole('button', { name: /Do\s*koszyka|Dodaj\s*do\s*koszyka/i });
-    const n = await b.count().catch(() => 0);
-    if (n === 1) {
-      const b0 = b.first();
-      await b0.scrollIntoViewIfNeeded().catch(() => {});
-      await b0
-        .click({ timeout: 20_000 })
-        .catch(() => b0.click({ force: true, timeout: 15_000 }).catch(() => {}));
-      await page.waitForLoadState('domcontentloaded').catch(() => {});
-      await page.waitForLoadState('networkidle', { timeout: 12_000 }).catch(() => {});
-      return true;
-    }
-    cur = cur.locator('xpath=..');
-  }
-  return false;
-}
-
-// PDP: one CTA, listing grid is easy to get wrong
+// List row clicks are flaky (same row / wrong "Do koszyka"). Always add from product page.
 async function addToCartOnProductPage(page: Page, productPath: string): Promise<void> {
   const raw = (productPath.split('?')[0] || '').trim();
   if (!/produkt/i.test(raw)) {
-    return;
+    throw new Error(`addToCart: need a /produkty/… path, got: ${productPath}`);
   }
   const target = raw.startsWith('/') ? raw : `/${raw}`;
   await page.goto(target, { waitUntil: 'load', timeout: 60_000 });
   await page.waitForLoadState('domcontentloaded');
   await acceptCookiesIfVisible(page);
-  const main = page.locator('#gc-main-content, [id="gc-main-content"], main, [role="main"], body').first();
-  const btn = main
-    .getByRole('button', { name: /Do\s*koszyka|Dodaj\s*do\s*koszyka|Dodaj do koszyka/i })
-    .first();
-  await btn.scrollIntoViewIfNeeded().catch(() => {});
-  await btn
-    .click({ timeout: 20_000 })
-    .catch(() => btn.click({ force: true, timeout: 15_000 }).catch(() => {}));
+  const root = page.locator('#gc-main-content, [id="gc-main-content"], main, [role="main"]').first();
+  await root.waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+  const cta = root
+    .getByRole('button', { name: /Dodaj.*koszyka|Do\s*koszyka/i })
+    .or(root.getByRole('link', { name: /Dodaj.*koszyka|Do\s*koszyka/i }));
+  if ((await cta.count().catch(() => 0)) === 0) {
+    const fallback = page
+      .locator('a, button')
+      .filter({ hasText: /Dodaj\s+do\s+koszyka|Dodaj\s*do\s*koszyka|Do\s*koszyka/i })
+      .first();
+    if ((await fallback.count().catch(() => 0)) > 0) {
+      await fallback.scrollIntoViewIfNeeded().catch(() => {});
+      await fallback
+        .click({ timeout: 20_000 })
+        .catch(() => fallback.click({ force: true, timeout: 15_000 }).catch(() => {}));
+    } else {
+      throw new Error(`addToCart: no add-to-basket control on ${target}`);
+    }
+  } else {
+    const b0 = cta.first();
+    await b0.scrollIntoViewIfNeeded().catch(() => {});
+    await b0
+      .click({ timeout: 20_000 })
+      .catch(() => b0.click({ force: true, timeout: 15_000 }).catch(() => {}));
+  }
   await page.waitForLoadState('domcontentloaded').catch(() => {});
-  await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
+  await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
 }
 
-// add same SKU as readList (productPath) — not generic nth(1) in DOM, or cart has one line
+/** Same `productPath` as in `readListPricesForFirstProducts` — adds via **PDP** (stable; listing grid was unreliable). */
 export async function addToCartByProductPath(page: Page, productPath: string): Promise<void> {
-  const main = page.locator('#gc-main-content, [id="gc-main-content"], main, [id="main"], [role="main"]').first();
-  const scope = (await main.count().catch(() => 0)) > 0 ? main : page;
-  const want = intercarsNormPath(productPath);
-  const { key, idx } = await page.evaluate((pathNorm) => {
-    const r = (document.querySelector('#gc-main-content') as HTMLElement | null) || document.body;
-    const as = r.querySelectorAll<HTMLAnchorElement>('a[href*="/produkty/"]');
-    for (let i = 0; i < as.length; i++) {
-      const a = as[i]!;
-      let p = '';
-      try {
-        p = new URL(a.getAttribute('href') || a.href, document.baseURI).pathname;
-      } catch {
-        const h = a.getAttribute('href') || '';
-        if (!/produkt/.test(h)) continue;
-        p = h;
-      }
-      p = p.split('?')[0]!.replace(/\/$/, '');
-      try {
-        p = decodeURIComponent(p).toLowerCase();
-      } catch {
-        p = p.toLowerCase();
-      }
-      if (p === pathNorm) {
-        const seg = pathNorm.split('/').filter(Boolean).pop() || '';
-        return { key: seg, idx: i };
-      }
-    }
-    return { key: '', idx: -1 };
-  }, want);
-  if (key && !/["\\#]/.test(key)) {
-    const byKey = scope.locator(`a[href*="/produkty/"][href*="${key}"]`);
-    if ((await byKey.count().catch(() => 0)) > 0) {
-      const link = byKey.first();
-      if (await tryClickAddInProductTile(page, link)) {
-        return;
-      }
-      if (await tryClickAddWalkingAncestorsOfLink(page, link)) {
-        return;
-      }
-    }
-  }
-  if (idx >= 0) {
-    const link = scope.locator('a[href*="/produkty/"]').nth(idx);
-    if (await tryClickAddInProductTile(page, link)) {
-      return;
-    }
-    if (await tryClickAddWalkingAncestorsOfLink(page, link)) {
-      return;
-    }
-  }
-  // last resort: PDP, single CTA, avoids "first in grid" mistake on dense listing
   await addToCartOnProductPage(page, productPath);
 }
 
