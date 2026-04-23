@@ -1,4 +1,4 @@
-import type { Page, Locator } from '@playwright/test';
+import type { Page, Locator, Frame } from '@playwright/test';
 
 // Helpers for intercars.pl — PL number formats, filters, list vs cart (assignment flow).
 // Site is a mess of divs; locators are defensive on prupose.
@@ -21,12 +21,34 @@ export async function acceptCookiesIfVisible(page: Page): Promise<void> {
   await btn.click({ timeout: 12000 }).catch(() => {});
 }
 
+/** SalesManago web push — `wpc_w` markup, no `role="dialog"`, often in an **iframe** (separate document). */
+async function dismissSalesmanagoWebPushInContext(ctx: Page | Frame): Promise<void> {
+  const nie = ctx
+    .locator('button.wpc_w_f_c_b-n, .wpc_w_f_c button.wpc_w_f_c_b-n')
+    .or(ctx.locator('.wpc_w_f, .wpc_w').getByRole('button', { name: 'NIE', exact: true }))
+    .first();
+  if ((await nie.count().catch(() => 0)) > 0 && (await nie.isVisible().catch(() => false))) {
+    await nie.click({ timeout: 5_000, force: true }).catch(() => {});
+  }
+}
+
+async function dismissSalesmanagoWebPushEverywhere(page: Page): Promise<void> {
+  for (const fr of page.frames()) {
+    await dismissSalesmanagoWebPushInContext(fr);
+  }
+}
+
 /**
  * Newsletter / promo ("Nie przegap… rabatów") — blocks `#gc-main-content` from going :visible in trace.
+ * SalesManago: `wpc_w_f_c_b-n` + all `page.frames()` (see `dismissSalesmanagoWebPushEverywhere`).
  * Click **NIE** inside the promo layer (dialog or a big `div`); never use a page-wide loose `/NIE/i` match.
  */
 export async function dismissIntercarsPromoOrNewsletterIfVisible(page: Page): Promise<void> {
   if (page.isClosed()) return;
+  for (let sm = 0; sm < 2; sm++) {
+    await dismissSalesmanagoWebPushEverywhere(page);
+    await page.waitForTimeout(200).catch(() => {});
+  }
   const promoHeading = /nie\s+przegap|najnowszych\s+rabat|rabaty\s+i\s+promocj/i;
   for (let round = 0; round < 4; round++) {
     if (page.isClosed()) return;
@@ -59,6 +81,7 @@ export async function dismissIntercarsPromoOrNewsletterIfVisible(page: Page): Pr
     }
     await page.waitForTimeout(400).catch(() => {});
   }
+  await dismissSalesmanagoWebPushEverywhere(page);
   await page.waitForTimeout(200).catch(() => {});
 }
 
@@ -552,6 +575,8 @@ async function addToCartOnProductPage(page: Page, productPath: string): Promise<
   // `load` + `networkidle` are dangerous here: long hangs; SPA keeps requests open → no "idle"
   await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 45_000 });
   await acceptCookiesIfVisible(page);
+  // SalesManago injects an iframe async — give it a beat before `dismiss` walks `page.frames()`.
+  await page.waitForTimeout(600).catch(() => {});
   await dismissIntercarsPromoOrNewsletterIfVisible(page);
   const root = page.locator('#gc-main-content, [id="gc-main-content"], main, [role="main"]').first();
   await root.waitFor({ state: 'visible', timeout: 25_000 }).catch(() => {});
@@ -570,7 +595,27 @@ async function addToCartOnProductPage(page: Page, productPath: string): Promise<
         .click({ force: true, timeout: 15_000 })
         .catch(() => fallback.click({ force: true, timeout: 10_000 }).catch(() => {}));
     } else {
-      throw new Error(`addToCart: no add-to-basket control on ${target}`);
+      await dismissIntercarsPromoOrNewsletterIfVisible(page);
+      await page.waitForTimeout(500).catch(() => {});
+      const cta2 = root
+        .getByRole('button', { name: /Dodaj.*koszyka|Do\s*koszyka/i })
+        .or(root.getByRole('link', { name: /Dodaj.*koszyka|Do\s*koszyka/i }));
+      const fb2 = root
+        .locator('a, button')
+        .filter({ hasText: /Dodaj\s+do\s+koszyka|Dodaj\s*do\s*koszyka|Do\s*koszyka/i })
+        .first();
+      if ((await cta2.count().catch(() => 0)) > 0) {
+        const b = cta2.first();
+        await b
+          .click({ force: true, timeout: 20_000 })
+          .catch(() => b.click({ force: true, timeout: 12_000 }).catch(() => {}));
+      } else if ((await fb2.count().catch(() => 0)) > 0) {
+        await fb2
+          .click({ force: true, timeout: 15_000 })
+          .catch(() => fb2.click({ force: true, timeout: 10_000 }).catch(() => {}));
+      } else {
+        throw new Error(`addToCart: no add-to-basket control on ${target}`);
+      }
     }
   } else {
     const b0 = cta.first();
